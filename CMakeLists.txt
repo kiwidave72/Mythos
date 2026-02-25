@@ -97,3 +97,14 @@ if(WIN32)
         @ONLY
     )
 endif()
+
+if(WIN32)
+    # This points to the file created in your CMAKE_BINARY_DIR
+    set(RES_FILES "${CMAKE_BINARY_DIR}/version.rc")
+endif()
+
+# Add the resource file here!
+add_executable(Mythos 
+    main.cpp 
+    ${RES_FILES} 
+)
