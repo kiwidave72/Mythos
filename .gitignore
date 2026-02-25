@@ -1,5 +1,6 @@
 # Build directories
 .vs/
+vcpkg_installed/
 release/
 debug/
 build/
@@ -36,6 +37,7 @@ cmake_install.cmake
 *.pdb
 *.ilk
 *.exp
+*.ini
 
 # IDE
 .vscode/
