@@ -5,7 +5,7 @@ int main()
 {
     App app;
 
-    if (!app.init(1280, 720, "Graph Editor"))
+    if (!app.init(1280, 720, "Mythos"))
     {
         std::cerr << "[Main] App init failed\n";
         return 1;

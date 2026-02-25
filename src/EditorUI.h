@@ -60,13 +60,20 @@ struct EditorUIState
     // Set true by App while the user is panning / zooming / orbiting the scene.
     bool  sceneInteracting  = false;
 
+    // Panels are fully hidden (not just dimmed) during scene interaction.
+    // panelsHidden goes true immediately when interaction starts, and returns
+    // false only after the user has stopped interacting for kUiHoldoff seconds
+    // — prevents flickering on short scroll ticks.
+    bool   panelsHidden  = false;
+    double uiHoldoffEnd  = 0.0;  // glfwGetTime() value when panels should reappear
+    static constexpr double kUiHoldoff = 0.12;  // seconds after last interaction
+
     // Gizmo operation mode (ImGuizmo::OPERATION values stored as int)
     // 0=none  7=translate  120=rotate  896=scale
     int   gizmoOp = 7; // default: translate
 
     // View mode toggle — solid vs wireframe
     bool  wireframeMode = false;
-    float panelAlpha    = 1.0f;
 
     // Layout constants — read by App to position viewport/gizmo correctly.
     // menuBarHeight is set after drawMainMenuBar each frame; others are fixed.

@@ -317,9 +317,7 @@ void App::render()
         m_uiState.statusExpiry = glfwGetTime() + 3.0;
     }
 
-    if (m_uiState.mode != EditorMode::PLAY) {
-        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, m_uiState.panelAlpha);
-
+    if (m_uiState.mode != EditorMode::PLAY && !m_uiState.panelsHidden) {
         // Asset Library
         m_assetLibrary.setOpen(m_uiState.showAssetLibrary);
         m_assetLibrary.draw(m_scene, m_uiState.importedPaths);
@@ -331,7 +329,6 @@ void App::render()
         m_uiState.showGrammarView = m_grammar.isOpen();
 
         drawSceneActions();
-        ImGui::PopStyleVar();
     }
 
     // ---- Drain outliner click ----
@@ -365,7 +362,7 @@ void App::render()
         m_uiState.inspectorCommit = false;
     }
 
-    if (m_uiState.mode != EditorMode::PLAY)
+    if (m_uiState.mode != EditorMode::PLAY && !m_uiState.panelsHidden)
         drawGizmo();
 
     ImGui::Render();

@@ -47,22 +47,25 @@ bool EditorUI::render(EditorUIState& state)
         return true;
     }
 
-    const float kGhostAlpha = 0.15f;
-    const float kFullAlpha  = 1.00f;
-    const float kFadeSpeed  = 8.0f;
-    float targetAlpha = state.sceneInteracting ? kGhostAlpha : kFullAlpha;
-    float dt = ImGui::GetIO().DeltaTime;
-    state.panelAlpha += (targetAlpha - state.panelAlpha) * std::min(1.0f, kFadeSpeed * dt);
-    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, state.panelAlpha);
+    // ---- Panel visibility ------------------------------------------------
+    // Hide all panels immediately when scene interaction begins.
+    // Restore them only after kUiHoldoff seconds of inactivity, so a
+    // brief scroll tick doesn't cause a visible flicker.
+    double now = ImGui::GetTime();
+    if (state.sceneInteracting)
+        state.uiHoldoffEnd = now + state.kUiHoldoff;
+    state.panelsHidden = (now < state.uiHoldoffEnd);
 
     drawMainMenuBar(state);
-    state.menuBarHeight = ImGui::GetFrameHeight();  // set after menu bar is drawn
+    state.menuBarHeight = ImGui::GetFrameHeight();
     drawToolbar(state);
     drawStatusBar(state);
-    drawScenePanel(state);
-    drawStatusToast(state);
 
-    ImGui::PopStyleVar();
+    if (!state.panelsHidden)
+    {
+        drawScenePanel(state);
+        drawStatusToast(state);
+    }
 
     return !wantQuit;
 }
