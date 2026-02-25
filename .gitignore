@@ -1,8 +1,9 @@
 # Build directories
 .vs/
+release/
+debug/
 build/
 bin/
-lib/
 out/
 bin/
 bin-int/

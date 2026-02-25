@@ -1,0 +1,710 @@
+================================================================================
+  GRAPH EDITOR — DEVELOPMENT ROADMAP
+  Last updated: 2026-02-25
+================================================================================
+
+
+================================================================================
+  COMPLETED
+================================================================================
+
+Phase 1  ✓  Shell
+             GLFW + GLAD + ImGui docking, game loop, FPS counter.
+
+Phase 2  ✓  Renderer
+             Camera orbit/pan/zoom, ground grid, VAO/VBO lit rendering.
+             UE5-style infinite procedural grid with 4-level adaptive LOD.
+             Procedural concrete tile texture (smooth centre, noisy edges,
+             grout lines) in GLSL — no texture assets required.
+             Light blue-grey colour palette.
+             Grid depth-testing fixed (gl_FragDepth from Y=0 hit point).
+             Zoom tracks mouse position on grid plane (map-zoom style).
+             Tighter near plane (0.01) and minimum zoom distance (0.05).
+
+Phase 3  ✓  Grammar Library (core)
+             Grammar extracted into lib/ with zero GL/ImGui dependency.
+             Animated step-by-step generation visible in viewport.
+             Area validation and minPrim enforcement for room-shaped loops.
+             GrammarInducer: learns tile grammar from hand-crafted example.
+
+Phase 4  ✓  SceneObject
+             Transform + mesh ref + socket list. Grammar populates scene
+             instead of owning its placed[] array. MeshLibrary shared pool.
+
+Phase 5a ✓  OBJ + GLTF Import
+             Multi-file native Windows file dialog.
+             ObjImporter: v/vn/vt/f, triangulates quads, flat normals.
+             GltfImporter: binary and ASCII GLTF/GLB support.
+
+Phase 6  ✓  Selection + 3D Cursor
+             Ray-cast against Y=0 plane, hover highlight, click selection,
+             properties panel with transform inspector.
+
+Phase 7  ✓  Asset Library
+             Persistent store (editor_assets.json) separate from Scene.
+             Per-asset calibration transform (offset / rotation / scale).
+             128x128 thumbnail renderer using offscreen FBO.
+             4-per-row scrollable grid viewer.
+             Multi-select: Click / Ctrl+Click / Shift+Click / Select All.
+             Calibration presets: Reset, Z-up to Y-up, -Z forward.
+             Add to Scene places instances with calibration baked in.
+
+Phase 8  ✓  Project File
+             JSON save/load of the entire scene (ProjectFile.cpp).
+
+Phase 9  ✓  Editor UI Polish
+             All panels hidden on launch except Scene view.
+             History list removed from Scene panel (undo/redo still on Ctrl+Z/Y).
+             UE5-style toolbar with Play/Stop, gizmo mode buttons.
+             Panel alpha fade when interacting with the scene.
+             Status toast notifications.
+             COMMANDS.txt reference listing all 43 commands and shortcuts.
+
+Phase 10 ✓  Gizmo + Multi-Object Transform
+             ImGuizmo translate/rotate/scale gizmo on selected object.
+             Multi-select transform: all selected objects move together.
+             Command history with undo/redo stack.
+             Copy/paste/delete selection.
+             Merge Selected and Merge + Weld Vertices.
+             Snap to Grid and Fit to Grid Cell.
+             Half-Edge Mesh split builder.
+
+
+================================================================================
+  REMAINING — RECOMMENDED ORDER
+================================================================================
+
+
+--------------------------------------------------------------------------------
+  ARCHITECTURE REFACTOR  (do this before new feature phases)
+--------------------------------------------------------------------------------
+
+Refactor A  Editor Mode System
+             Currently editor has two modes (Editor, Play) toggled by P.
+             Expand to a proper mode enum:
+               - EDITOR        current default 3D scene editing
+               - PLAY          preview/simulation mode (exists)
+               - GRAPH_GRAMMAR grammar building and editing mode (new)
+             Each mode owns its toolbar section, panel visibility set,
+             and keyboard shortcut context. Switching mode swaps all three.
+             Add mode indicator to toolbar (replaces current EDITOR/PLAY text).
+
+Refactor B  ✓  Grammar Library Split — TWO SEPARATE LIBRARIES
+             lib/grammar-core/  Grammar.h/.cpp, GrammarInducer.h/.cpp,
+                                HalfEdgeMesh.h/.cpp — zero GL/ImGui dependency.
+             lib/grammar-ui/    GrammarView.h/.cpp — ImGui panels, depends on
+                                grammar-core + ImGui + Scene + Renderer.
+             src/ no longer contains any grammar files.
+             Old flat lib/ files archived to lib/legacy/ (not compiled).
+
+
+Refactor C  ✓  Grammar Mode Toolbar
+             ToolbarSection struct added to EditorUI.h with requiredMode +
+             draw callback. EditorUI::registerToolbarSection() stores sections.
+             Toolbar dispatch loop shows each section only when its mode matches.
+             EDITOR section (Import, Gizmo T/R/S, Wireframe) hidden in GRAMMAR mode.
+             GrammarView::drawToolbar() registered from App::init() — draws
+             Generate / Reset / Step buttons when GRAPH_GRAMMAR mode is active.
+
+
+--------------------------------------------------------------------------------
+  FEATURE PHASES
+--------------------------------------------------------------------------------
+
+Refactor D  Background Task System + Progress Bar
+             All long-running operations must run on a background thread
+             and report progress to the UI without blocking the render loop.
+             The UI must remain fully interactive (camera, selection, panels)
+             while any task is running.
+
+             TASKS THAT MUST BE MOVED TO BACKGROUND
+             ────────────────────────────────────────
+             The following operations currently block the main thread and
+             must be migrated when this system is built:
+
+               1. OBJ Import
+                  ObjImporter::load() — file parse, normal computation.
+                  Can be large for complex meshes.
+
+               2. GLTF/GLB Import
+                  GltfImporter — JSON parse, buffer decode, mesh build.
+                  Binary buffers can be many MB.
+
+               3. Mesh GPU Upload (asset->upload())
+                  Must remain on main thread (GL context) but the CPU-side
+                  parse and mesh build that precedes it can be offloaded.
+                  Pattern: background builds MeshAsset data → main thread
+                  calls upload() on completion.
+
+               4. Thumbnail Generation
+                  ThumbnailRenderer::renderThumbnail() — offscreen FBO render
+                  per asset. Currently runs inline during import. With many
+                  assets this causes a visible hitch.
+
+               5. Project File Save
+                  ProjectFile save — JSON serialise entire scene to disk.
+                  Should never block a frame.
+
+               6. Project File Load
+                  ProjectFile load — JSON parse + all mesh reloads and
+                  GPU uploads for every object in the scene.
+
+               7. Grammar Generation
+                  grammar::Grammar::stepGenerate() is already frame-spread
+                  (m_animating loop) but the initial beginGenerate() setup
+                  and the GrammarInducer::induceFromFile() call are blocking.
+                  induceFromFile() in particular reads and parses a GEP file
+                  plus runs rule inference — potentially slow on large examples.
+
+               8. Merge + Weld Vertices
+                  MeshMerge::mergeAndWeld() — vertex welding with tolerance
+                  search is O(n²) for large meshes.
+
+               9. Half-Edge Split Build
+                  HalfEdgeMesh construction from a large merged mesh.
+
+              10. Any future operations (asset pack scanning, large-world
+                  streaming, grammar batch generation, export) must follow
+                  the same pattern from the start.
+
+             SYSTEM DESIGN
+             ─────────────
+             Introduce src/TaskSystem.h/.cpp:
+
+               struct Task {
+                   std::string      label;       // shown in progress bar
+                   float            progress;    // 0.0 → 1.0
+                   bool             done;
+                   bool             failed;
+                   std::string      errorMsg;
+                   std::function<void()> onComplete;  // called on main thread
+               };
+
+               class TaskSystem {
+                   void submit(std::shared_ptr<Task>);   // launches std::thread
+                   void tick();       // call once per frame — fires onComplete
+                   bool anyRunning(); // true if progress bar should show
+                   // ... internal queue, mutex, condition_variable
+               };
+
+             Progress Bar UI (drawn by EditorUI each frame):
+               - Rendered as a thin bar at the bottom of the viewport,
+                 not a modal dialog — UI stays live.
+               - Shows task label + percentage + animated spinner.
+               - If multiple tasks are queued, shows "N tasks remaining".
+               - Fades out smoothly when the last task completes.
+               - Errors shown as a toast notification (existing system).
+
+             Rules for new tasks going forward:
+               - Any operation taking > ~50ms must use TaskSystem.
+               - CPU work runs in background thread.
+               - GL calls (upload, FBO render) are queued and flushed
+                 on the main thread in TaskSystem::tick().
+               - onComplete callback fires on main thread — safe to
+                 update Scene, AssetLibrary, UI state.
+
+Refactor E  Scene Outliner — Flat List → Tree Structure
+             The current outliner is a flat scrollable list of SceneObjects.
+             This breaks down as soon as objects are grouped — e.g. a
+             building imported from a multi-mesh GLTF file, a grammar
+             generation result owning 30 primitives, or a manually grouped
+             set of props. The outliner must become a proper tree.
+
+             DATA MODEL CHANGES (SceneObject + Scene)
+             ──────────────────────────────────────────
+             Add grouping support to SceneObject:
+
+               struct SceneObject {
+                   ...
+                   int  parentId   = -1;           // -1 = root level
+                   bool groupExpanded = true;       // outliner collapse state
+                   // children are found by querying Scene for objects
+                   // whose parentId == this->id  (no child list stored,
+                   // avoids double-bookkeeping and dangling refs)
+               };
+
+             Add group operations to Scene:
+
+               int  createGroup(const std::string& name);
+               void setParent(int objectId, int parentId);  // -1 = unparent
+               void reparent(int objectId, int newParentId);
+               std::vector<int> childrenOf(int parentId) const;
+               std::vector<int> rootObjects() const;  // parentId == -1
+
+             Group node is itself a SceneObject with no mesh (mesh == nullptr).
+             Deleting a group deletes or unparents its children (user choice).
+             Transform hierarchy: child world transform = parent * local.
+             SceneObject::transform() already returns world matrix —
+             needs a worldTransform(Scene&) variant that walks the parent
+             chain and multiplies.
+
+             OUTLINER UI CHANGES (drawScenePanel)
+             ──────────────────────────────────────
+             Replace the flat BeginChild loop with a recursive tree draw:
+
+               void drawOutlinerNode(int id, Scene& scene);
+               // Uses ImGui::TreeNodeEx for groups (collapsible, arrow).
+               // Uses ImGui::Selectable for leaf objects (no arrow).
+               // Indentation handled by ImGui tree depth automatically.
+
+             Features the tree outliner must support:
+               - Expand / collapse groups with arrow toggle.
+               - Select individual objects inside collapsed groups.
+               - Shift+Click range select within the same level.
+               - Ctrl+Click multi-select across levels.
+               - Drag object onto group node to reparent (ImGui drag-drop).
+               - Drag object to root level to unparent.
+               - Right-click context menu:
+                   Group Selected       (creates group, moves selected in)
+                   Ungroup              (moves children to parent level)
+                   Rename               (inline text edit)
+                   Duplicate
+                   Delete
+               - Visibility toggle (eye icon) per node — hides subtree.
+               - Lock toggle (lock icon) per node — blocks selection of subtree.
+               - Group node shows child count badge when collapsed.
+
+             GROUPS THAT WILL BE AUTO-CREATED
+             ──────────────────────────────────
+             Once the tree exists, these importers/systems create groups
+             automatically rather than dumping everything at root level:
+
+               - GLTF import      → one group per GLTF scene node hierarchy,
+                                    preserving the original node tree.
+               - OBJ import       → one group per imported file if it contains
+                                    multiple mesh objects (o/g statements).
+               - Grammar generate → one group per generation run, named
+                                    "Grammar_001", "Grammar_002", etc.
+                                    All placed primitives go inside.
+               - Paste            → pasted objects placed in a "Pasted_001"
+                                    group so they can be moved/deleted together.
+               - Asset Library    → "Add to Scene" creates a group if the
+                                    asset contains multiple sub-meshes.
+
+             SCENE SAVE/LOAD (ProjectFile)
+             ──────────────────────────────
+             ProjectFile must serialise parentId per object.
+             Load order must reconstruct parent-before-child (sort by depth).
+             Group nodes (mesh == nullptr) serialised as type "group".
+
+             NOTE ON ORDERING
+             ─────────────────
+             This refactor should be done after Refactor B (grammar-ui split)
+             because grammar generation auto-grouping requires the grammar-ui
+             library to call Scene::createGroup() — that interface must be
+             stable first. It should be done before Phase 11 (Connection
+             Volumes) because connection volumes are per-object and the
+             parent-child transform chain affects their world positions.
+
+
+Refactor F  ✓  Status Bar — Always-Docked Bottom
+             Replaced floating drawStatsOverlay() with drawStatusBar().
+             Pinned to bottom of OS window (statusBarHeight = 22px).
+             Left: project filename. Centre: object/selection count + mode.
+             Right: FPS right-aligned. statusBarHeight in EditorUIState for layout.
+             Toast overlay kept for save/load confirmations.
+
+Refactor G  ✓  Scene Panel — Always-Docked Left
+             Replaced floating Scene window with drawScenePanel() in EditorUI.
+             Always-docked left strip, 300px, zero rounding, pinned below toolbar.
+             Outliner + transform inspector driven by EditorUIState fields.
+             App fills fields in update(), drains clicks/commits in render().
+             Action buttons moved to App::drawSceneActions() child region.
+             scenePanelWidth in EditorUIState for viewport/gizmo offset.
+
+Refactor H  Multi-Monitor Support (ImGui Viewports)
+             Currently ImGuiConfigFlags_ViewportsEnable is not set, so all
+             ImGui windows are confined to the main GLFW window and cannot
+             be dragged to a second monitor.
+
+             IMPLEMENTATION
+             ───────────────
+             In App::init(), add to ImGui config flags:
+               io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+             This enables platform windows — any undocked ImGui window
+             becomes its own OS-level floating window and can be placed
+             on any monitor.
+
+             Style fix required when viewports are enabled:
+               style.WindowRounding = 0.0f;
+               style.Colors[ImGuiCol_WindowBg].w = 1.0f;
+
+             Which panels can float to other monitors:
+               - Asset Library        ✓  good candidate for second monitor
+               - Grammar View         ✓  heavy panel, benefits from own monitor
+               - Graph Connection View (Phase 15) ✓  node graphs need space
+               - Scene panel          ✗  locked left, cannot undock (Refactor G)
+               - Toolbar              ✗  fixed, cannot undock
+               - Status bar           ✗  fixed, cannot undock
+
+             NOTE: ViewportsEnable requires the GLFW backend to support
+             multi-viewport. Verify imgui_impl_glfw.cpp version supports
+             this before enabling.
+
+Phase A     GLTF Export with Vertex Colour Information
+             Grammar-generated and hand-assembled scenes must be exportable
+             as GLTF files with per-object colour baked in.
+
+             SCOPE
+             ──────
+             Export full scene or selected objects to .gltf / .glb:
+               - Each SceneObject becomes a GLTF mesh node.
+               - World transform written to node transform, respecting
+                 parent hierarchy from Refactor E.
+               - Per-object colour written as a KHR_materials_unlit
+                 material with baseColorFactor = [r, g, b, 1.0].
+                 Supported by Blender, UE5, Unity, all major DCC tools.
+               - Grammar primitive colours (procedural cube colours) are
+                 included, so generated layouts export with colour coding.
+               - Groups (Refactor E) map to GLTF node hierarchy naturally.
+             Implement GltfExporter.h/.cpp in src/ — minimal GLTF JSON
+             writer, no external library needed.
+             Offer .gltf (separate .bin sidecar) and .glb (single binary).
+             Add to File menu:
+               Export Scene as GLTF...
+               Export Selection as GLTF...
+             NOTE: This replaces the OBJ Export placeholder (old Phase 5b /
+             new Phase 13). GLTF is the better target — it carries colour,
+             hierarchy, and is the industry standard interchange format.
+
+Phase B     Remove Hardcoded Tiles and Example Grammar
+             GrammarView::registerPrims() hardcodes 6 tile types
+             (HStraight, VStraight, CornerTL/TR/BL/BR) in code.
+             The "Hardcoded demo" checkbox also references a fixed example.
+             These must be removed once asset-driven workflows exist.
+
+             WHAT REPLACES THEM
+             ────────────────────
+             Tiles are defined by the asset library + connector volumes,
+             not by code. The grammar learns tile types from imported meshes
+             and their connector definitions (Phase 11 + Phase 12).
+
+             Intermediate step (do after Phase 11, before Phase 12):
+               - Remove registerPrims() and all hardcoded colour/socket data.
+               - Remove "Hardcoded demo" checkbox from grammar panel.
+               - Grammar panel shows an empty state:
+                 "Import meshes, define their connectors, then generate."
+               - Seed / min/max sliders remain.
+             Full removal of the grid-based grammar is part of Phase 12.
+
+Phase 11    Connection Volumes
+             Box gizmo on each SceneObject with resize/move/rotate handles.
+             Defines the physical connector region used for snapping.
+             Use ImGuizmo library rather than building handle interaction
+             from scratch.
+             Store connection volume in SceneObject alongside socket list.
+
+Phase 12    Free-Form Generation                          *** PIVOT POINT ***
+             Complete rewrite of the generator.
+             Grid-based (integer cells, cardinal sockets)
+               → world-space (sockets as positions + normals, connector snapping).
+             Everything before this phase works on the grid system.
+             Everything after works on physical world-space connectors.
+             Grid remains useful for measurement/alignment but is no longer
+             enforced by the generator.
+             GrammarInducer updated to infer world-space rules from
+             hand-placed example scenes.
+
+Phase 13    ~~OBJ Export~~  →  SUPERSEDED by Phase A (GLTF Export)
+             GLTF carries colour, hierarchy, and is the industry standard.
+             OBJ export will not be implemented. See Phase A above.
+
+Phase 14    Multiple Grammars in Scene
+             Multiple grammar roots or rule sets in a single scene.
+             Each grammar manages its own sub-graph of SceneObjects.
+             Follows naturally from SceneObject being the right abstraction.
+
+Phase 15    Graph Connection View
+             Separate editor mode (or sub-panel) showing the node graph
+             of placed assets and their connectors.
+             Display: mesh thumbnail, connector volumes, connection edges.
+             Node graph UI — use imnodes library.
+
+Phase 16    Icons
+             SVG/PNG icons for all 43 commands in COMMANDS.txt.
+             Load as OpenGL textures and display via ImGui::Image in
+             toolbar and panel buttons.
+             Icon sheet approach (single texture atlas, UV per icon).
+
+Phase 100   Large Worlds with Asset Packs
+             Root folder with nested sub-folders of assets
+             (buildings, pathways, rivers, lakes, etc.)
+             Each folder has a grammar rules definition file.
+             Open vs closed loop distinction:
+               - Rivers    → open loop, can flow into lakes
+               - Buildings → closed loop
+               - Pathways  → can join rivers, lakes, buildings
+             Current grammar architecture maps directly to this —
+             each folder's rules file is a Grammar definition.
+
+
+================================================================================
+  THE MERRELL REPLACEMENT — STRATEGIC DECISION
+================================================================================
+
+  Reference paper: docs/Merrell2023_ExampleBasedProcModelGraphGrammars.pdf
+  Paul Merrell, "Example-Based Procedural Modeling Using Graph Grammars"
+  ACM Trans. Graph. 42, 4, Article 1 (August 2023)
+
+  WHAT THIS MEANS FOR THE PROJECT
+  The current generator (Grammar.h/.cpp, GrammarInducer.h/.cpp) uses a
+  hand-coded grid-based tile compatibility system. This was always going
+  to be replaced by Phase 12 (Free-Form Generation).
+
+  The Merrell paper SOLVES the design problem that was listed in this
+  roadmap. It provides a complete, published algorithm for automatically
+  generating a graph grammar from an example shape, with no hand-crafted
+  rules. The generated grammar produces a wide range of locally similar
+  shapes, handling closed loops correctly — which all prior methods fail to
+  do including our current grid approach.
+
+  DECISION: Replace the current grammar system entirely with an
+  implementation of the Merrell DPO graph grammar algorithm.
+  The editor, scene, asset library, and all src/ code are unaffected.
+  Only lib/grammar-core/ is replaced. Grammar-ui gets updated panels.
+
+  WHY MERRELL IS THE RIGHT CHOICE
+  - Handles closed loops — the core failure of our current system.
+  - Not limited to specific shapes. Works on arbitrary polygonal input.
+  - Requires only a small example input to generalise from.
+  - Proven in 2D and extended to 3D (Section 7 of paper).
+  - Fast: Castle example (88 rules, 4k iterations) runs in 9.5s on CPU.
+  - Rules are invertible (DPO property): constructive and destructive
+    application both work, maps cleanly to undo/redo.
+  - Full pseudocode in paper (Algorithms 1, 2, 3). Implementable.
+
+  WHAT IS PRESERVED VS REPLACED
+  Preserved:
+    HalfEdgeMesh.h/.cpp        directly relevant; Merrell primitives
+                               map to half-edge graph cuts.
+    All of src/                editor, scene, renderer, asset library
+                               untouched.
+    lib/grammar-ui/ concept    updated to drive new algorithm.
+  Replaced:
+    Grammar.h/.cpp             grid-based WFC-style generation loop.
+    GrammarInducer.h/.cpp      tile compatibility rule learner.
+    Grid cell / cardinal socket direction as primary representation.
+    Replaced by labeled half-edges and boundary strings.
+
+
+================================================================================
+  MERRELL IMPLEMENTATION ROADMAP
+================================================================================
+
+  Work through these phases in order. Each has a testable deliverable.
+  All new code lives in lib/grammar-core/ (restructured).
+  Reference throughout: docs/Merrell2023_ExampleBasedProcModelGraphGrammars.pdf
+
+  ─────────────────────────────────────────────────────────────────────────────
+  Phase MG-0  Study & Data Structures  (design on paper before coding)
+  ─────────────────────────────────────────────────────────────────────────────
+  Read the paper. Key sections before writing a single line of code:
+    Sec 3.3   half-edges, edge labels (l, r, θ), boundary string ∂G,
+              positive ∧ and negative ∨ turns.
+    Sec 4.1   Disassembly: cutting input into primitives.
+    Sec 4.2   Branch gluing and loop gluing rules.
+    Sec 4.3   Graph hierarchy (abstract model).
+    Sec 5.1   Algorithm 1: Find Grammar From Primitives.
+    Sec 5.3   Algorithm 2: findMatchingGroups.
+    Sec 6     Algorithm 3: Generate Graph Drawing From Grammar.
+    Sec 7     Extension to 3D.
+
+  Core data structures to design:
+    HalfEdge        label (l, r, θ), directed, paired with opposite half-edge
+    MerrellGraph    set of vertices + half-edges + face labels
+    BoundaryString  circular sequence of half-edge labels and ∧ ∨ turns
+    DPORule         left graph L, right graph R, interface I, morphisms φL φR
+    GrammarRuleSet  vector<DPORule> + starter rules
+
+  ─────────────────────────────────────────────────────────────────────────────
+  Phase MG-1  Input Representation & Disassembly  (Section 4.1)
+  ─────────────────────────────────────────────────────────────────────────────
+  Convert an input shape into a graph and cut it into primitives.
+
+  2D (implement first):
+    - Input: polygon with labeled faces.
+    - Each edge → full edge with label ã = (l, r, θ). θ = tangent angle.
+    - Disassembly: cut every edge into two half-edges (a, ā), disconnect
+      every vertex. Each disconnected piece = one primitive.
+    - Compute boundary string ∂P for each primitive.
+
+  3D (after 2D working, Section 7):
+    - Input: 3D mesh from GLTF/OBJ import.
+    - Each mesh face → labeled face. Each mesh edge → graph edge.
+    - Boundary ∂G becomes a 2D boundary graph (not a 1D string).
+    - Boundary string matching → graph isomorphism matching.
+
+  DELIVERABLE: given a simple 2D rectangle, produce correct primitives
+  and boundary strings. Verify against Fig. 4 in paper.
+
+  ─────────────────────────────────────────────────────────────────────────────
+  Phase MG-2  Graph Hierarchy Construction  (Section 4.3)
+  ─────────────────────────────────────────────────────────────────────────────
+  Incrementally build the concrete graph hierarchy by gluing operations.
+
+  Implement boundary string operations:
+    - Circular equality: ya∧b = ∧bya = bya∧
+    - Turn cancellation: a∧x∧∨ = a∧x
+    - Loop glue:   aā → ε   and   ā∨a∧ → ε
+    - Branch glue: (āB to a) replaces a → B∨
+  Implement hierarchy as: BoundaryString → MerrellGraph map.
+  Grow hierarchy via all possible loop and branch gluings per generation.
+  Limit by max half-edges or max generations (Section 5.7).
+
+  DELIVERABLE: given rectangle primitives, generate hierarchy to gen 4
+  and verify against Fig. 5 in paper.
+
+  ─────────────────────────────────────────────────────────────────────────────
+  Phase MG-3  Grammar Extraction  (Algorithm 1 + Algorithm 2, Section 5)
+  ─────────────────────────────────────────────────────────────────────────────
+  Extract DPO production rules from the hierarchy. Heart of the algorithm.
+
+  Algorithm 1 — for each graph G (simple to complex):
+    1. Try Algorithm 2 to find a rule simplifying G.
+    2. If found: G is reducible. Mark it, remove from frontier.
+    3. If G has no complete descendants (Sec 5.6): prune G + descendants.
+    4. Continue until hierarchy exhausted or rule count limit reached.
+
+  Algorithm 2 — findMatchingGroups(∂L):
+    Recursive divide-and-conquer on the boundary string.
+    For each graph R in hierarchy: try to match ∂R to ∨ⁿ ∂L ∧ⁿ.
+    Recursively match each unmatched substring. Splice results together.
+
+  Special cases:
+    - Starter rules (Sec 5.3.1): complete graph → empty graph ∅.
+    - Stubs (Sec 5.5): one-half-edge graphs, very useful for pruning.
+    - Descendant reduction (Sec 5.4): R is descendant of L — restructure.
+    - Pruning (Sec 5.6): graphs with no complete irreducible descendants.
+
+  DELIVERABLE: given rectangle input, automatically produce the 5-rule
+  grammar from Fig. 5 of the paper.
+
+  ─────────────────────────────────────────────────────────────────────────────
+  Phase MG-4  Shape Generation  (Algorithm 3, Section 6)
+  ─────────────────────────────────────────────────────────────────────────────
+  Use the extracted grammar to generate new shapes.
+
+  Algorithm 3:
+    1. Start: empty graph ∅.
+    2. For N iterations:
+       a. Pick a DPO rule. Apply constructively (R→L) or destructively
+          (L→R) — no preference. Match via planar subgraph isomorphism.
+       b. Propose vertex positions (Sec 6.2):
+          Build linear system Ax=b from edge angle constraints.
+          Find nullspace basis KA. Sample from x̂ + KA·Λ.
+          If overconstrained: free adjacent vertices iteratively.
+       c. Accept if: angles correct, edge lengths in range, planar.
+          Optional: Metropolis-Hastings cost function (Phase MG-8).
+    3. Output: complete graph drawing (angle graph with vertex positions).
+
+  DELIVERABLE: given 5-rule rectangle grammar, generate new shapes
+  similar to Fig. 8(a). Render as flat geometry on Y=0 in viewport.
+
+  ─────────────────────────────────────────────────────────────────────────────
+  Phase MG-5  Editor Integration
+  ─────────────────────────────────────────────────────────────────────────────
+  Connect new Merrell core to the editor's grammar-ui layer.
+
+  lib/grammar-core/ public API:
+    MerrellGrammar::loadFromShape(MeshAsset&)   extract primitives + rules
+    MerrellGrammar::generate(N, seed)            run Algorithm 3
+    MerrellGrammar::saveRules(path)              serialise rules to JSON
+    MerrellGrammar::loadRules(path)              load rules from JSON
+
+  lib/grammar-ui/ panel updates:
+    "Example Input"  — select shape from Asset Library as grammar example.
+    "Grammar"        — rule count, primitive count, hierarchy stats.
+                       "Extract Grammar" button → background TaskSystem task.
+    "Generate"       — N iterations slider, seed, edge length constraints.
+                       "Generate" button → background TaskSystem task.
+    "Rules"          — list extracted DPO rules, debug individual rule apply.
+
+  Scene integration:
+    - Each face in graph drawing → SceneObject placed in scene.
+    - Face label → mesh asset lookup in Asset Library.
+    - All generated objects → placed in "Grammar_NNN" group (Refactor E).
+
+  Legacy code retirement (on successful MG-5 completion):
+    Grammar.h/.cpp, GrammarInducer.h/.cpp → archived to legacy/ folder.
+    HalfEdgeMesh.h/.cpp → kept, adapted.
+    Hardcoded tiles (Phase B) → removed at same time.
+
+  ─────────────────────────────────────────────────────────────────────────────
+  Phase MG-6  3D Extension  (Section 7)
+  ─────────────────────────────────────────────────────────────────────────────
+  Extend from 2D to full 3D shapes.
+
+  Key 3D differences:
+    - ∂G is a 2D boundary graph, not a 1D string.
+    - Boundary matching: graph isomorphism instead of string matching.
+    - Splice: swap connections between edges along shared face.
+    - Loop gluing: half-edges sharing a common face turning ±360° around
+      that face's normal.
+    - Vertex positions are 3D; edge constraints encode 3D angles.
+  Start with extruded 2D profiles (buildings, walls) where 2D grammar
+  already gives useful 3D results, then tackle fully 3D meshes.
+
+  ─────────────────────────────────────────────────────────────────────────────
+  Phase MG-7  Decorations  (Appendix B)
+  ─────────────────────────────────────────────────────────────────────────────
+  Post-processing step: place mesh assets at faces, edges, vertices.
+    - Face label → mesh from Asset Library (wall, window, roof, etc.)
+    - Edge decoration: tile an asset repeatedly along edge length.
+    - Vertex decoration: place asset at corners.
+    - Bending (Appendix B): subdivide edges, randomly bend segments,
+      solve final positions via linear least squares preserving cycles.
+
+  ─────────────────────────────────────────────────────────────────────────────
+  Phase MG-8  Metropolis-Hastings Cost Control  (Section 6.3, optional)
+  ─────────────────────────────────────────────────────────────────────────────
+  Optional acceptance criterion for user control over large-scale properties.
+    - Accept/reject each grammar step based on cost function delta.
+    - Useful cost functions: target density, edge label frequency,
+      connectivity constraints.
+    - Expose as sliders in grammar-ui panel.
+    - Addresses the large-scale constraint limitation noted in Sec 9.3.
+
+
+================================================================================
+  ARCHITECTURE — CURRENT FILE MAP
+================================================================================
+
+  lib/grammar-core/         (target state after Refactor B + MG-5)
+    MerrellGrammar.h/.cpp   DPO graph grammar: Algorithm 1+2+3 (Merrell 2023)
+    MerrellGraph.h/.cpp     Half-edge graph, boundary string, gluing ops.
+    HalfEdgeMesh.h/.cpp     Mesh topology — adapted for MerrellGraph use.
+    legacy/                 Archived originals (not compiled):
+      Grammar.h/.cpp        Old grid-based generation — superseded.
+      GrammarInducer.h/.cpp Old tile rule learner — superseded.
+
+  lib/grammar-ui/           (target state after Refactor B + MG-5)
+    GrammarView.h/.cpp      ImGui panels: example input, extract, generate.
+    GrammarRulesView.h/.cpp ImGui panel: DPO rule inspector + debugger.
+
+  docs/
+    Merrell2023_ExampleBasedProcModelGraphGrammars.pdf   Reference paper.
+
+  src/                      Editor core — knows nothing about grammar internals.
+    App.h/.cpp              Main loop, mode switching, event routing.
+    EditorUI.h/.cpp         Toolbar, menu bar, stats overlay, toast.
+    Scene.h/.cpp            Single source of truth for placed objects.
+    SceneObject.h           Core scene entity.
+    Renderer.h/.cpp         All GL. Draws scene via drawSceneObject().
+    AssetLibrary.h/.cpp     Persistent editor asset store.
+    AssetLibraryView.h/.cpp ImGui window for asset library.
+    ProjectFile.h/.cpp      JSON scene save/load.
+    CommandHistory.h        Undo/redo stack.
+    MeshAsset.h/.cpp        GPU mesh wrapper.
+    MeshMerge.h/.cpp        Merge + weld operations.
+    ObjImporter.h/.cpp      .obj → MeshAsset. No GL dependency.
+    GltfImporter.h/.cpp     .gltf/.glb → MeshAsset.
+    ThumbnailRenderer.h/.cpp Offscreen FBO for asset previews.
+    FileDialog.h/.cpp       Native Windows file picker.
+    InputRouter.h/.cpp      Mouse/keyboard ownership routing.
+    main.cpp                Entry point.
+
+  shaders/
+    grid.vert / grid.frag   Infinite procedural grid, 4-level LOD, concrete.
+    mesh.vert / mesh.frag   Lit mesh rendering.
+
+================================================================================

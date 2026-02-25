@@ -1,0 +1,77 @@
+================================================================================
+EDITOR COMMANDS & BUTTONS REFERENCE
+================================================================================
+Keep this file up to date whenever new commands, buttons, or shortcuts are added.
+--------------------------------------------------------------------------------
+
+FILE MENU
+---------
+ 1  New Project                         Ctrl+N
+ 2  Open Project                        Ctrl+O
+ 3  Save Project                        Ctrl+S
+ 4  Save Project As                     -
+ 5  Import Mesh                         Ctrl+I
+ 6  Quit                                Alt+F4
+
+WINDOWS MENU
+------------
+ 7  Toggle Asset Library                -
+ 8  Toggle Grammar View                 -
+ 9  Toggle Test Editbox                 -
+
+TOOLBAR
+-------
+10  Play                                P
+11  Stop                                P / ESC
+12  Import Mesh (toolbar button)        Ctrl+I
+13  Gizmo - Translate                   W
+14  Gizmo - Rotate                      E
+15  Gizmo - Scale                       R
+16  Toggle Solid / Wireframe View       Z  (toolbar button + keyboard)
+
+SCENE PANEL
+-----------
+16  Select Object (outliner)            Click
+17  Multi-Select (outliner)             Shift+Click
+18  Snap to Grid                        -
+19  Fit to Grid Cell                    -
+20  Copy                                Ctrl+C
+21  Paste                               Ctrl+V
+22  Delete                              Del
+23  Merge Selected                      -
+24  Merge + Weld Vertices               -
+25  Build Half-Edge Split               -
+
+ASSET LIBRARY PANEL
+--------------------
+26  Select All (assets)                 -
+27  Clear Selection (assets)            -
+28  Reset (transform preview)           -
+29  Z-up to Y-up                        -
+30  -Z Forward                          -
+31  Add to Scene                        -
+32  Remove Asset                        -
+
+GRAMMAR VIEW PANEL
+------------------
+33  Generate New                        -
+34  Reset Seed                          -
+35  Assign Imported Mesh                -
+36  Decode                              -
+37  Load Example GEP                    -
+
+KEYBOARD ONLY
+-------------
+38  Undo                                Ctrl+Z
+39  Redo                                Ctrl+Y / Ctrl+Shift+Z
+40  Select All                          Ctrl+A
+41  Deselect / Cancel                   ESC
+42  Focus Origin                        F
+43  Gizmo Off                           Q
+44  Toggle Solid / Wireframe View       Z
+45  Toggle Play Mode                    P
+46  Toggle Graph Grammar Mode           G
+
+================================================================================
+TOTAL: 46 commands
+================================================================================
