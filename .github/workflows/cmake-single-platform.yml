@@ -26,11 +26,13 @@ jobs:
     # You may pin to the exact commit or the version.
     # uses: codacy/git-version@fa06788276d7492a2af01662649696d249ecf4cb
       uses:  gittools/actions/gitversion/setup@v3.1.11
+      with:
+        versionSpec: '6.0.x'
       
     - name: Execute GitVersion
       id: gitversion # Give this step an ID to reference its outputs
       uses: gittools/actions/gitversion/execute@v3.1.11
-     
+       
     - name: Display Version Info
       run: |
         echo "Semantic Version: ${{ steps.gitversion.outputs.SemVer }}"
