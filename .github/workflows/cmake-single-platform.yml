@@ -21,7 +21,28 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-
+      with:
+      # CRITICAL: 0 fetches all history for all branches and tags
+        fetch-depth: 0
+        
+    - name: Git Version
+    # You may pin to the exact commit or the version.
+    # uses: codacy/git-version@fa06788276d7492a2af01662649696d249ecf4cb
+      uses:  gittools/actions/gitversion/setup@v3.1.11
+      with:
+        versionSpec: '6.0.x'
+      
+    - name: Execute GitVersion
+      id: gitversion # Give this step an ID to reference its outputs
+      uses: gittools/actions/gitversion/execute@v3.1.11
+       
+    - name: Display Version Info
+      run: |
+        echo "Semantic Version: ${{ steps.gitversion.outputs.SemVer }}"
+        echo "Full Semantic Version: ${{ steps.gitversion.outputs.FullSemVer }}"
+        echo "Branch Name: ${{ steps.gitversion.outputs.BranchName }}"
+        # You can use these versions for building, tagging Docker images, etc.
+     
     - name: Install vcpkg
       uses: lukka/run-vcpkg@v11
       with:
@@ -30,12 +51,16 @@ jobs:
     - name: Configure CMake
       # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
       # See https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html?highlight=cmake_build_type
-      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake
+      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} 
+        -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake 
+        -DMYTHOS_VERSION="${{ steps.gitversion.outputs.FullSemVer }}"
+        -DMYTHOS_VERSION_SEMVER="${{ steps.gitversion.outputs.SemVer }}"
 
     - name: Build
       # Build your program with the given configuration
       run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
-
+        
+        
     - name: Test
       working-directory: ${{github.workspace}}/build
       # Execute tests defined by the CMake configuration.
