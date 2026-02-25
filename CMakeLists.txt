@@ -11,6 +11,29 @@ find_package(glm    CONFIG REQUIRED)
 find_package(imgui    CONFIG REQUIRED)
 find_package(imguizmo CONFIG REQUIRED)
 
+if(WIN32)
+    # Expect version like: 1.2.3 or 1.2.3-beta.4
+    string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)" _ "${MYTHOS_VERSION_SEMVER}")
+
+    set(MYTHOS_VERSION_MAJOR "${CMAKE_MATCH_1}")
+    set(MYTHOS_VERSION_MINOR "${CMAKE_MATCH_2}")
+    set(MYTHOS_VERSION_PATCH "${CMAKE_MATCH_3}")
+
+    set(MYTHOS_VERSION_COMMA
+        "${MYTHOS_VERSION_MAJOR},${MYTHOS_VERSION_MINOR},${MYTHOS_VERSION_PATCH},0")
+
+    configure_file(
+        ${CMAKE_SOURCE_DIR}/version.rc.in
+        ${CMAKE_BINARY_DIR}/version.rc
+        @ONLY
+    )
+endif()
+
+if(WIN32)
+    # This points to the file created in your CMAKE_BINARY_DIR
+    set(RES_FILES "${CMAKE_BINARY_DIR}/version.rc")
+endif()
+
 # ---- Shaders copied to build dir ----
 file(GLOB SHADER_FILES "${CMAKE_SOURCE_DIR}/shaders/*.vert"
                        "${CMAKE_SOURCE_DIR}/shaders/*.frag")
@@ -42,6 +65,7 @@ set(SOURCES
     lib/grammar-core/HalfEdgeMesh.cpp
     # grammar-ui: ImGui panels for grammar editing
     lib/grammar-ui/GrammarView.cpp
+    ${RES_FILES}
 )
 
 add_executable(GraphEditor ${SOURCES})
@@ -80,31 +104,6 @@ if(WIN32)
         LINK_FLAGS "/SUBSYSTEM:CONSOLE")
 endif()
 
-if(WIN32)
-    # Expect version like: 1.2.3 or 1.2.3-beta.4
-    string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)" _ "${MYTHOS_VERSION_SEMVER}")
 
-    set(MYTHOS_VERSION_MAJOR "${CMAKE_MATCH_1}")
-    set(MYTHOS_VERSION_MINOR "${CMAKE_MATCH_2}")
-    set(MYTHOS_VERSION_PATCH "${CMAKE_MATCH_3}")
 
-    set(MYTHOS_VERSION_COMMA
-        "${MYTHOS_VERSION_MAJOR},${MYTHOS_VERSION_MINOR},${MYTHOS_VERSION_PATCH},0")
-
-    configure_file(
-        ${CMAKE_SOURCE_DIR}/version.rc.in
-        ${CMAKE_BINARY_DIR}/version.rc
-        @ONLY
-    )
-endif()
-
-if(WIN32)
-    # This points to the file created in your CMAKE_BINARY_DIR
-    set(RES_FILES "${CMAKE_BINARY_DIR}/version.rc")
-endif()
-
-# Add the resource file here!
-add_executable(Mythos 
-    main.cpp 
-    ${RES_FILES} 
-)
+ 
