@@ -21,7 +21,10 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-
+      with:
+      # CRITICAL: 0 fetches all history for all branches and tags
+        fetch-depth: 0
+        
     - name: Git Version
     # You may pin to the exact commit or the version.
     # uses: codacy/git-version@fa06788276d7492a2af01662649696d249ecf4cb
