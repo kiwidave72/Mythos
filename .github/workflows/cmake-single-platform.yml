@@ -25,11 +25,11 @@ jobs:
     - name: Git Version
     # You may pin to the exact commit or the version.
     # uses: codacy/git-version@fa06788276d7492a2af01662649696d249ecf4cb
-      uses: codacy/git-version@2.4.0
+      uses:  gittools/actions/gitversion/setup@v3.1.11
       
     - name: Execute GitVersion
       id: gitversion # Give this step an ID to reference its outputs
-      uses: gitversion/execute@v0
+      uses: gittools/actions/gitversion/execute@v3.1.11
      
     - name: Display Version Info
       run: |
