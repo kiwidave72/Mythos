@@ -79,3 +79,21 @@ if(WIN32)
     set_target_properties(GraphEditor PROPERTIES
         LINK_FLAGS "/SUBSYSTEM:CONSOLE")
 endif()
+
+if(WIN32)
+    # Expect version like: 1.2.3 or 1.2.3-beta.4
+    string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)" _ "${MYTHOS_VERSION_SEMVER}")
+
+    set(MYTHOS_VERSION_MAJOR "${CMAKE_MATCH_1}")
+    set(MYTHOS_VERSION_MINOR "${CMAKE_MATCH_2}")
+    set(MYTHOS_VERSION_PATCH "${CMAKE_MATCH_3}")
+
+    set(MYTHOS_VERSION_COMMA
+        "${MYTHOS_VERSION_MAJOR},${MYTHOS_VERSION_MINOR},${MYTHOS_VERSION_PATCH},0")
+
+    configure_file(
+        ${CMAKE_SOURCE_DIR}/version.rc.in
+        ${CMAKE_BINARY_DIR}/version.rc
+        @ONLY
+    )
+endif()
