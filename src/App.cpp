@@ -91,11 +91,55 @@ bool App::init(int width, int height, const std::string& title)
 
     m_grammar.init(m_scene, m_meshLib);
 
+    // ---- Merrell DPO grammar (MG-1+) init ----------------------------------
+    // Build socket definitions from the same tile vocabulary used by GrammarView.
+    // This keeps MerrellGrammar in sync with the registered primitives without
+    // duplicating the tile definitions.
+    {
+        std::vector<merrell::TileSocketDef> socketDefs = {
+            { "HStraight", {{-1,0},{1,0}}  },
+            { "VStraight", {{0,-1},{0,1}}  },
+            { "CornerTL",  {{-1,0},{0,-1}} },
+            { "CornerTR",  {{ 1,0},{0,-1}} },
+            { "CornerBL",  {{-1,0},{0,1}}  },
+            { "CornerBR",  {{ 1,0},{0,1}}  },
+        };
+        m_merrell.loadFromTiles(socketDefs, {});
+    }
+
+    m_graphViewer.setGrammar(&m_merrell);
+
     // Register grammar-ui toolbar section.
     // Shown only when mode == GRAPH_GRAMMAR — draws Generate / Reset / Step buttons.
     m_ui.registerToolbarSection({
         EditorMode::GRAPH_GRAMMAR,
         [this]() { m_grammar.drawToolbar(m_scene, m_meshLib); }
+    });
+
+    // Register graph viewer toolbar section — Extract Grammar + status.
+    m_ui.registerToolbarSection({
+        EditorMode::GRAPH_GRAMMAR,
+        [this]() {
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+            if (ImGui::Button(" Extract Grammar ")) {
+                m_merrell.extractGrammar();
+                m_uiState.statusMsg    = "Grammar extracted: "
+                    + std::to_string(m_merrell.ruleCount()) + " rules";
+                m_uiState.statusExpiry = glfwGetTime() + 3.0;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Run Algorithm 1+2 on the loaded primitives");
+            ImGui::SameLine();
+
+            // Primitive / hierarchy / rule counts
+            char buf[128];
+            snprintf(buf, sizeof(buf), "%d prims  %d hier  %d rules",
+                m_merrell.primitiveCount(),
+                (int)m_merrell.hierarchy().size(),
+                m_merrell.ruleCount());
+            ImGui::TextDisabled("%s", buf);
+        }
     });
 
     m_camera.target = {0,0,0};
@@ -318,17 +362,51 @@ void App::render()
     }
 
     if (m_uiState.mode != EditorMode::PLAY && !m_uiState.panelsHidden) {
-        // Asset Library
-        m_assetLibrary.setOpen(m_uiState.showAssetLibrary);
-        m_assetLibrary.draw(m_scene, m_uiState.importedPaths);
-        m_uiState.showAssetLibrary = m_assetLibrary.isOpen();
+        // ---- Mode transition side effects (fire exactly once per transition) ----
+        if (m_uiState.mode != m_uiState.prevMode) {
+            EditorMode entering = m_uiState.mode;
+            EditorMode leaving  = m_uiState.prevMode;
 
-        // Grammar View — synced with menu toggle
-        m_grammar.setOpen(m_uiState.showGrammarView);
-        m_grammar.drawPanel(m_scene, m_meshLib);
-        m_uiState.showGrammarView = m_grammar.isOpen();
+            if (entering == EditorMode::GRAPH_GRAMMAR) {
+                // Entering grammar mode: stop legacy generator, open graph viewer
+                m_grammar.stopGenerating();
+                m_uiState.showGraphViewer = true;
+                m_uiState.showGrammarView = true;
+                m_uiState.showAssetLibrary = false;
+            }
+            if (leaving == EditorMode::GRAPH_GRAMMAR) {
+                // Leaving grammar mode: close grammar-specific panels
+                m_uiState.showGraphViewer = false;
+            }
+            if (entering == EditorMode::EDITOR) {
+                m_uiState.showAssetLibrary = true;
+            }
+        }
 
-        drawSceneActions();
+        // Asset Library — only in EDITOR mode
+        if (m_uiState.mode == EditorMode::EDITOR) {
+            m_assetLibrary.setOpen(m_uiState.showAssetLibrary);
+            m_assetLibrary.draw(m_scene, m_uiState.importedPaths);
+            m_uiState.showAssetLibrary = m_assetLibrary.isOpen();
+        }
+
+        // Grammar View (legacy) — only in GRAPH_GRAMMAR mode
+        if (m_uiState.mode == EditorMode::GRAPH_GRAMMAR) {
+            m_grammar.setOpen(m_uiState.showGrammarView);
+            m_grammar.drawPanel(m_scene, m_meshLib);
+            m_uiState.showGrammarView = m_grammar.isOpen();
+        }
+
+        // Graph Viewer (MG-2.5) — only in GRAPH_GRAMMAR mode
+        if (m_uiState.mode == EditorMode::GRAPH_GRAMMAR) {
+            m_graphViewer.setOpen(m_uiState.showGraphViewer);
+            m_graphViewer.drawPanel(m_uiState);
+            m_uiState.showGraphViewer = m_graphViewer.isOpen();
+        }
+
+        // Scene actions (gizmo buttons, snap, etc.) — only in EDITOR mode
+        if (m_uiState.mode == EditorMode::EDITOR)
+            drawSceneActions();
     }
 
     // ---- Drain outliner click ----
@@ -364,6 +442,9 @@ void App::render()
 
     if (m_uiState.mode != EditorMode::PLAY && !m_uiState.panelsHidden)
         drawGizmo();
+
+    // Record mode for transition detection next frame
+    m_uiState.prevMode = m_uiState.mode;
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());

@@ -1,12 +1,13 @@
 {
   "name": "graph-editor",
   "version": "0.1.0",
-  "builtin-baseline": "af752f21c9d79ba3df9cb0250ce2233933f58486",
+  "builtin-baseline": "2285a86a6a9b40f269a8448e89830f3f6c8d3356",
   "dependencies": [
     "glfw3",
     "imguizmo",
     "glad",
     "glm",
+    "imnodes",
     {
       "name": "imgui",
       "features": [

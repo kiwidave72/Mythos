@@ -136,13 +136,14 @@ void EditorUI::drawMainMenuBar(EditorUIState& state)
     {
         ImGui::MenuItem("Asset Library",  nullptr, &state.showAssetLibrary);
         ImGui::MenuItem("Grammar View",   nullptr, &state.showGrammarView);
+        ImGui::MenuItem("Graph Viewer",   nullptr, &state.showGraphViewer);
         ImGui::MenuItem("Test Editbox",   nullptr, &state.showTestWindow);
         ImGui::EndMenu();
     }
 
     if (ImGui::BeginMenu("Help"))
     {
-        ImGui::MenuItem("About Graph Editor");
+        ImGui::MenuItem("About Mythos");
         ImGui::EndMenu();
     }
 
@@ -302,17 +303,7 @@ void EditorUI::drawToolbar(EditorUIState& state)
     // ---- Registered external sections -------------------------------------
     for (auto& section : m_toolbarSections)
     {
-        bool show = false;
-        if (state.mode == EditorMode::PLAY)
-            show = false;
-        else if (section.requiredMode == EditorMode::EDITOR)
-            show = (state.mode == EditorMode::EDITOR);
-        else if (section.requiredMode == EditorMode::GRAPH_GRAMMAR)
-            show = (state.mode == EditorMode::GRAPH_GRAMMAR);
-        else
-            show = true;
-
-        if (show)
+        if (sectionVisible(section, state.mode))
         {
             ImGui::TextDisabled("|");
             ImGui::SameLine();
@@ -322,6 +313,33 @@ void EditorUI::drawToolbar(EditorUIState& state)
     }
 
     ImGui::End();
+}
+
+// ============================================================
+// Toolbar section visibility (Refactor A)
+// ============================================================
+// Supports the new multi-mode visibility flags AND the old single-mode
+// requiredMode path (backwards compat with Refactor C registrations).
+//
+// Rules:
+//   PLAY mode   — never show any registered section
+//   Otherwise   — if visibleInEditor / visibleInGrammar flags are set,
+//                 use them; otherwise fall back to requiredMode comparison.
+/*static*/ bool EditorUI::sectionVisible(const ToolbarSection& s, EditorMode mode)
+{
+    if (mode == EditorMode::PLAY) return false;
+
+    // If either new-style flag is set, use the new path
+    if (s.visibleInEditor || s.visibleInGrammar) {
+        if (mode == EditorMode::EDITOR)        return s.visibleInEditor;
+        if (mode == EditorMode::GRAPH_GRAMMAR) return s.visibleInGrammar;
+        return false;
+    }
+
+    // Legacy requiredMode path (Refactor C)
+    if (s.requiredMode == EditorMode::EDITOR)        return mode == EditorMode::EDITOR;
+    if (s.requiredMode == EditorMode::GRAPH_GRAMMAR) return mode == EditorMode::GRAPH_GRAMMAR;
+    return true; // wildcard
 }
 
 // ============================================================
