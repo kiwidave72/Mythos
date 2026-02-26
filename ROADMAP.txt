@@ -79,15 +79,18 @@ Phase 10 ✓  Gizmo + Multi-Object Transform
   ARCHITECTURE REFACTOR  (do this before new feature phases)
 --------------------------------------------------------------------------------
 
-Refactor A  Editor Mode System
-             Currently editor has two modes (Editor, Play) toggled by P.
-             Expand to a proper mode enum:
-               - EDITOR        current default 3D scene editing
-               - PLAY          preview/simulation mode (exists)
-               - GRAPH_GRAMMAR grammar building and editing mode (new)
-             Each mode owns its toolbar section, panel visibility set,
-             and keyboard shortcut context. Switching mode swaps all three.
-             Add mode indicator to toolbar (replaces current EDITOR/PLAY text).
+Refactor A  ✓  Editor Mode System
+             EditorMode enum: EDITOR / PLAY / GRAPH_GRAMMAR.
+             Mode transitions fire exactly once per switch (prevMode tracking).
+             Panel visibility swaps on mode change (showAssetLibrary,
+             showGrammarView, showGraphViewer all wired to mode transitions).
+             Mode indicator in toolbar (colour-coded label).
+             Grammar toggle button in toolbar (G shortcut).
+             ToolbarSection extended with multi-mode visibility (Refactor A final):
+               - visibleInEditor / visibleInGrammar flags replace single requiredMode.
+               - Static factories: forMode(), editorOnly(), grammarOnly(), alwaysVisible().
+               - sectionVisible() helper in EditorUI.cpp dispatches both old and new paths.
+               - Backwards compatible with existing Refactor C registrations.
 
 Refactor B  ✓  Grammar Library Split — TWO SEPARATE LIBRARIES
              lib/grammar-core/  Grammar.h/.cpp, GrammarInducer.h/.cpp,
@@ -496,7 +499,65 @@ Phase 100   Large Worlds with Asset Packs
   Reference throughout: docs/Merrell2023_ExampleBasedProcModelGraphGrammars.pdf
 
   ─────────────────────────────────────────────────────────────────────────────
-  Phase MG-0  Study & Data Structures  (design on paper before coding)
+  IMPLEMENTATION STRATEGY — GRID-FIRST, FREE-FORM LATER
+  ────────────────────────────────────────────────────────
+  MG-0 through MG-4 can be implemented on top of the existing tile system.
+  The Merrell algorithm operates on graphs (nodes, edges, labels) and is
+  purely topological — it knows nothing about metres or grid cells. The tiles
+  become the labeled faces. Grid cardinal directions become edge angles.
+
+  What is deferred to later phases:
+    - Arbitrary polygon input (MG-1 generalisation)
+    - Free-form vertex position solving (Algorithm 3 Section 6.2 linear system)
+    - 3D extension (MG-6)
+
+  ⚠️  CRITICAL DESIGN NOTE — read before touching MerrellGraph or DPORule:
+  Don't let the grid assumption bake too deep into MerrellGraph or DPORule
+  data structures. Keep edge labels abstract (l, r, θ) from the start even
+  if θ is currently always a multiple of 90°. That way the transition to
+  arbitrary angles later is a data change, not a structural one.
+
+  ⚠️  COMPUTE SHADER NOTE — read before implementing any MG algorithm:
+  Where possible, GPU compute shaders should be used for the heavy MG
+  operations. The most promising candidates are:
+    - Algorithm 2 (findMatchingGroups): boundary string matching across the
+      entire hierarchy is embarrassingly parallel — each candidate graph in
+      the hierarchy can be tested against each boundary substring independently.
+    - Algorithm 3 (generation): rule matching (subgraph isomorphism attempts)
+      across many candidate positions in G can be parallelised per-rule.
+    - Position solving (Sec 6.2): the linear system Ax = b is a natural
+      fit for a GPU solver (each vertex position is independent given fixed
+      neighbours).
+  Implementation approach:
+    - Keep the CPU reference implementation correct and working first.
+    - GPU path lives alongside it, selected at runtime if GL_ARB_compute_shader
+      is available (OpenGL 4.3+). Fall back to CPU silently if not.
+    - Compute shaders go in shaders/compute/ — one .glsl file per operation.
+    - Data passed via SSBOs (Shader Storage Buffer Objects): pack graph topology
+      into flat int arrays (vertex ids, half-edge next/twin/face, label indices)
+      for efficient GPU access.
+    - String labels (l, r) are interned to int indices before upload so the
+      GPU only works with integers, not variable-length strings.
+
+  Phase MG-0  ✓  Study & Data Structures  [compiler errors fixed in MG-1 pass]
+             Three new headers created in lib/grammar-core/:
+               MerrellGraph.h/.cpp  — EdgeLabel (l, r, θ as float ⚠️), TurnType,
+                                      BoundaryString, MGHalfEdge, MGVertex, MGFace,
+                                      MerrellGraph with factory/accessor/boundary methods.
+               DPORule.h/.cpp       — GraphMorphism (vertex/halfEdge/face maps),
+                                      RuleKind enum, DPORule (L, I, R graphs + φL φR),
+                                      RuleMatch result type.
+               MerrellGrammar.h/.cpp — TileInput (grid-first ⚠️), PlacedFace,
+                                      GenerationResult, GrammarSettings, HierarchyNode,
+                                      MerrellGrammar controller with all algorithm
+                                      entry points stubbed (TODO MG-1 through MG-4).
+             All three files compile as stubs. CMakeLists.txt updated.
+             Key design decisions locked in:
+               θ is float throughout — never int or enum.
+               pos is vec2 for now — comment marks where to promote to vec3 (MG-6).
+               loadFromTiles() is the grid-first entry point — loadFromShape() declared
+               but unimplemented until MG-5.
+               No grid coordinates anywhere in MerrellGraph or DPORule.
   ─────────────────────────────────────────────────────────────────────────────
   Read the paper. Key sections before writing a single line of code:
     Sec 3.3   half-edges, edge labels (l, r, θ), boundary string ∂G,
@@ -517,45 +578,59 @@ Phase 100   Large Worlds with Asset Packs
     GrammarRuleSet  vector<DPORule> + starter rules
 
   ─────────────────────────────────────────────────────────────────────────────
-  Phase MG-1  Input Representation & Disassembly  (Section 4.1)
+  Phase MG-1  ✓  Input Representation & Disassembly  (Section 4.1)
   ─────────────────────────────────────────────────────────────────────────────
-  Convert an input shape into a graph and cut it into primitives.
-
-  2D (implement first):
-    - Input: polygon with labeled faces.
-    - Each edge → full edge with label ã = (l, r, θ). θ = tangent angle.
-    - Disassembly: cut every edge into two half-edges (a, ā), disconnect
-      every vertex. Each disconnected piece = one primitive.
-    - Compute boundary string ∂P for each primitive.
-
-  3D (after 2D working, Section 7):
-    - Input: 3D mesh from GLTF/OBJ import.
-    - Each mesh face → labeled face. Each mesh edge → graph edge.
-    - Boundary ∂G becomes a 2D boundary graph (not a 1D string).
-    - Boundary string matching → graph isomorphism matching.
-
-  DELIVERABLE: given a simple 2D rectangle, produce correct primitives
-  and boundary strings. Verify against Fig. 4 in paper.
-
-  ─────────────────────────────────────────────────────────────────────────────
-  Phase MG-2  Graph Hierarchy Construction  (Section 4.3)
-  ─────────────────────────────────────────────────────────────────────────────
-  Incrementally build the concrete graph hierarchy by gluing operations.
-
-  Implement boundary string operations:
-    - Circular equality: ya∧b = ∧bya = bya∧
-    - Turn cancellation: a∧x∧∨ = a∧x
-    - Loop glue:   aā → ε   and   ā∨a∧ → ε
-    - Branch glue: (āB to a) replaces a → B∨
-  Implement hierarchy as: BoundaryString → MerrellGraph map.
-  Grow hierarchy via all possible loop and branch gluings per generation.
-  Limit by max half-edges or max generations (Section 5.7).
-
-  DELIVERABLE: given rectangle primitives, generate hierarchy to gen 4
-  and verify against Fig. 5 in paper.
+  MG-0 compiler errors fixed (M_PI define, MeshData forward decl, clear()).
+  loadFromTiles(socketDefs, tiles) implemented in MerrellGrammar.cpp:
+    - TileSocketDef added: one entry per unique tile label with socket dirs.
+    - One canonical MerrellGraph primitive built per unique tile label.
+    - Each primitive: 4 vertices (unit square), 4 half-edge pairs, 1 face.
+    - Socket edges labelled l=tile, r="open"; sealed edges r="exterior".
+    - theta set via gridDirToTheta() -- float, multiples of pi/2 for now.
+    - linkFaceLoop() wires next/prev/face pointers for the CCW boundary walk.
+  boundaryOf(faceId) implemented in MerrellGraph.cpp:
+    - Walks face half-edge loop via next pointers.
+    - At each vertex, computes turn type from cross product of consecutive
+      edge direction vectors (cos theta, sin theta).
+    - Produces BoundaryString with alternating edge/turn elements.
+    - Each rectangular primitive produces 4 edges and 4 positive turns
+      (total turn count = +4, isComplete() = true).
+  BoundaryString::toString() added for debug output.
+  MerrellGraph::clear() added (resets vectors and id counters).
+  README.md added to project root (from user-provided file).
 
   ─────────────────────────────────────────────────────────────────────────────
-  Phase MG-3  Grammar Extraction  (Algorithm 1 + Algorithm 2, Section 5)
+  Phase MG-2  ✓  Graph Hierarchy Construction  (Section 4.3)
+  ─────────────────────────────────────────────────────────────────────────────
+  BoundaryString operations implemented:
+    isCircularlyEqual(): O(n^2) rotation search, compares element-by-element.
+    cancelTurns(): removes adjacent opposite-sign turn pairs; loops until
+      stable; handles wrap-around (last+first pair cancellation).
+    rotated(offset): returns a copy starting at element `offset` (used by
+      Algorithm 2 substring matching in MG-3).
+    outerBoundary(): walks all half-edges with r="open" or twin==-1, chains
+      them by vertex into a CCW boundary walk with turn annotations.
+  MerrellGraph gluing helpers:
+    mergeVertices(from, to): welds two vertices by reassigning all half-edge
+      starts; removes the source vertex.
+    removeHalfEdgePair(heId): patches next/prev of neighbours; erases both
+      half-edges.
+    appendGraph(dst, src, offsets): copies a graph with id offsetting for
+      combining two graphs into one (used by loop gluing).
+  MG-2 hierarchy construction:
+    buildHierarchy() seeds gen-0 from primitives, then iterates generations
+      calling tryLoopGluings() + tryBranchGluings() until no new nodes appear
+      or maxHierarchyGen is reached.
+    tryLoopGluings(gen): for all pairs (A,B) at this generation, finds all
+      pairs of complementary open edges (theta diff = pi), runs loopGlue(),
+      deduplicates by boundary string toString(), adds new nodes to hierarchy.
+    tryBranchGluings: TODO (branch gluing, Sec 4.2 type 2).
+  NOTE: branch gluings are the next step before MG-3. The current
+  loop-only hierarchy is correct but incomplete -- branch gluings produce
+  the T-junctions and more complex configs needed for rule extraction.
+
+  ─────────────────────────────────────────────────────────────────────────────
+  Phase MG-3  ✓  Grammar Extraction  (Algorithm 1 + Algorithm 2, Section 5)
   ─────────────────────────────────────────────────────────────────────────────
   Extract DPO production rules from the hierarchy. Heart of the algorithm.
 
@@ -601,6 +676,151 @@ Phase 100   Large Worlds with Asset Packs
   similar to Fig. 8(a). Render as flat geometry on Y=0 in viewport.
 
   ─────────────────────────────────────────────────────────────────────────────
+
+  ─────────────────────────────────────────────────────────────────────────────
+  Phase MG-2.5  ✓  Graph Viewer -- imnodes Node Graph Editor  [CONFIRMED RUNNING]
+  imnodes vendored: third_party/imnodes/imnodes.h + imnodes.cpp
+  Removed from vcpkg.json. Added to CMakeLists SOURCES + include dirs.
+  ToolbarSection brace-init fixed: both App.cpp calls use grammarOnly() factory.
+  ─────────────────────────────────────────────────────────────────────────────
+  Add a new editor view that shows the output of MG-2 (and MG-1) as an
+  interactive node graph, so hierarchy splits can be verified visually
+  before continuing to MG-3. This is a debugging and validation tool,
+  not a permanent part of the generation pipeline.
+
+  WHY THIS EXISTS
+  ─────────────────
+  MG-2 graph hierarchy construction is the most opaque step -- it produces
+  a DAG of MerrellGraph nodes whose correctness is hard to verify from
+  console output alone. A visual node graph where you can see:
+    - Each primitive (gen 0) as a node
+    - Each gluing result as a child node connected to its parents
+    - Boundary strings as edge labels between nodes
+    - Whether each node is complete (closed loop), pruned, or live
+  ...makes it immediately obvious if the hierarchy is being built correctly.
+
+  LIBRARY
+  ─────────────
+  Use imnodes (https://github.com/Nelarius/imnodes) -- a lightweight ImGui
+  extension for node graph rendering. Add via vcpkg: "imnodes".
+  imnodes renders nodes and connections inside a standard ImGui window.
+  It handles pan/zoom, node dragging, and connection rendering.
+
+  VIEWS REQUIRED
+  ─────────────────
+  The graph viewer panel must support switching between these data views:
+
+  1. PRIMITIVE VIEW (MG-1 output)
+     - One node per MerrellGraph primitive.
+     - Node header = face label (tile name).
+     - Node body: list of half-edges with their labels (l, r, theta).
+     - Node body: boundary string text: "E0^E1^E2^E3^" etc.
+     - Colour-coded: socket edges (r="open") vs sealed edges (r="exterior").
+
+  2. HIERARCHY VIEW (MG-2 output)
+     - One node per HierarchyNode, laid out by generation (columns).
+     - Gen 0 = left column (primitives). Gen 1, 2, ... = right columns.
+     - Node header = "Gen N: <boundary string>"
+     - Node body: face count, edge count, isComplete badge.
+     - Connections: parent->child edges showing which gluings produced it.
+     - Pruned nodes shown greyed out.
+     - Complete nodes (closed loops) shown with green border.
+
+  3. RULE VIEW (MG-3 output -- used in MG-5 panel)
+     - One node per DPORule, split into L and R sub-nodes.
+     - L node: left graph layout (the larger pattern).
+     - R node: right graph layout (the smaller replacement).
+     - I interface shown as shared edges between L and R.
+     - Rule kind shown in header (LoopGlue, BranchGlue, Starter, etc.).
+     - Morphisms phi_L and phi_R shown as coloured edge connections.
+
+  ⚠️  DEBUG VIEW NOTE (see below for full list of inspectable types)
+  All five core types must be inspectable in the graph viewer panel:
+    HalfEdge       -- label (l, r, theta), directed, paired with twin
+    MerrellGraph   -- set of vertices + half-edges + face labels
+    BoundaryString -- circular sequence of half-edge labels and turns
+    DPORule        -- L graph, R graph, interface I, morphisms phi_L phi_R
+    GrammarRuleSet -- vector<DPORule> + starter rules
+
+  IMPLEMENTATION
+  ─────────────────
+  New files:
+    lib/grammar-ui/GraphViewer.h/.cpp   -- imnodes-based viewer panel
+  New EditorMode or sub-panel inside GRAPH_GRAMMAR mode.
+  Registered as a toolbar section (like GrammarView).
+  Add imnodes to vcpkg.json and CMakeLists.txt.
+  GraphViewer reads MerrellGrammar::primitives(), hierarchy(), rules()
+  directly -- no data copying needed since it's read-only display.
+
+
+  ─────────────────────────────────────────────────────────────────────────────────
+  Phase MG-2.5  ✓  Graph Viewer -- imnodes node graph panel  [CONFIRMED RUNNING]
+  GraphViewer.h/.cpp implemented: 3 tabs (Primitives/Hierarchy/Rules).
+  imnodes API fixed: SetNodeEditorSpacePos, PopColorStyle() with no-arg.
+  imnodes include in header. Wired into App::render() + App::init().
+  All 5 inspectable types rendered: HalfEdge table, MerrellGraph canvas,
+  BoundaryString inline chain, DPORule L/I/R layout, GrammarRuleSet list.
+  ─────────────────────────────────────────────────────────────────────────────────
+  Goal: add a new editor panel that lets us visually inspect the output of
+  MG-1 and MG-2 before committing to MG-3. MG-2 hierarchy construction is
+  the most opaque step -- a visual node graph makes mismatches obvious
+  immediately rather than burying them in console output.
+
+  LIBRARY
+    Use imnodes (github.com/Nelarius/imnodes). Lightweight ImGui extension
+    for node-graph rendering. Pan/zoom, node drag, bezier connections.
+    Add via vcpkg: add "imnodes" to vcpkg.json.
+    Add to CMakeLists: find_package(imnodes CONFIG REQUIRED),
+    target_link_libraries(... imnodes::imnodes).
+
+  FIVE INSPECTABLE TYPES
+  The viewer must be able to display any of these on demand:
+
+    HalfEdge
+      Each directed half-edge shown as a node.
+      Fields: id, twin id, next/prev, vertex, face, label (l, r, theta).
+      Colour-coded: "open" edges = teal, "exterior" = grey, cut (twin==-1) = red.
+
+    MerrellGraph
+      One node-graph canvas per MerrellGraph.
+      Vertex nodes connected by labelled half-edge arrows.
+      Face label shown as a badge on the face centroid.
+      Boundary string displayed as a text overlay: "E0^E1^E2^E3^".
+
+    BoundaryString
+      Shown as a horizontal chain of elements.
+      Edge elements = coloured boxes with label and theta.
+      Turn elements = ^ or v symbols between boxes.
+      Complete status badge (green checkmark if |turns| == 4).
+
+    DPORule
+      Three sub-graphs side by side: L (left) -- I (interface) -- R (right).
+      Morphism edges phi_L and phi_R shown as coloured connections
+      between I nodes and their images in L and R.
+      Rule kind (LoopGlue / BranchGlue / Starter / Stub / General) in header.
+
+    GrammarRuleSet
+      List view of all extracted DPORule objects.
+      Click any rule to expand its L/I/R sub-graph view.
+      Starter rules pinned at top. Filter by RuleKind.
+
+  VIEWS (tab strip within the panel)
+    Tab 1 -- PRIMITIVES (MG-1 output)
+      Grid of MerrellGraph nodes, one per primitive.
+      Shows: face label, degree, boundary string, socket edges highlighted.
+    Tab 2 -- HIERARCHY (MG-2 output)
+      DAG layout: gen-0 left, gen-N right.
+      Nodes: HierarchyNode.graph (compact view), isComplete badge, pruned flag.
+      Edges: parent->child connections showing which gluings produced each node.
+    Tab 3 -- RULES (MG-3 output)
+      GrammarRuleSet view as above.
+
+  IMPLEMENTATION FILES
+    lib/grammar-ui/GraphViewer.h   -- MerrellGrammar const& ref, drawPanel()
+    lib/grammar-ui/GraphViewer.cpp -- imnodes rendering for all 5 types
+  Register as a new panel alongside GrammarView.
+  GraphViewer holds a const pointer to MerrellGrammar -- read-only, no copy.
+
   Phase MG-5  Editor Integration
   ─────────────────────────────────────────────────────────────────────────────
   Connect new Merrell core to the editor's grammar-ui layer.

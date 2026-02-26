@@ -3,6 +3,8 @@
 #include "EditorUI.h"
 #include "InputRouter.h"
 #include "../lib/grammar-ui/GrammarView.h"
+#include "../lib/grammar-ui/GraphViewer.h"
+#include "../lib/grammar-core/MerrellGrammar.h"
 #include "Scene.h"
 #include "AssetLibraryView.h"
 #include "CommandHistory.h"
@@ -24,7 +26,9 @@ private:
     EditorUI         m_ui;
     EditorUIState    m_uiState;
     InputRouter      m_input;
-    GrammarView      m_grammar;
+    GrammarView      m_grammar;          // legacy tile-loop grammar (Grammar.h)
+    merrell::MerrellGrammar m_merrell;   // Merrell 2023 DPO system (MG-1+)
+    GraphViewer      m_graphViewer;      // MG-2.5 imnodes viewer panel
     Scene            m_scene;
     MeshLibrary      m_meshLib;
     AssetLibraryView m_assetLibrary;
