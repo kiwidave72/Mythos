@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cassert>
 #include <unordered_map>
+#include <set>
 
 namespace merrell {
 
@@ -109,10 +110,16 @@ std::string BoundaryString::toString() const
 {
     std::ostringstream ss;
     for (const auto& e : elements) {
-        if (e.is_turn)
+        if (e.is_turn) {
             ss << (e.turn_type == TurnType::Positive ? "^" : "v");
-        else
-            ss << "E" << e.edge_id;
+        } else {
+            // Show edge type: O=open, X=exterior, G=glued, ?=unknown
+            char typeChar = '?';
+            if      (e.edge_label == "open")     typeChar = 'O';
+            else if (e.edge_label == "exterior")  typeChar = 'X';
+            else if (e.edge_label == "glued")     typeChar = 'G';
+            ss << typeChar << e.edge_id;
+        }
     }
     return ss.str();
 }
@@ -245,10 +252,17 @@ void MerrellGraph::removeHalfEdgePair(int heId)
     auto patch = [&](int id) {
         MGHalfEdge* h = halfEdge(id);
         if (!h) return;
-        // Find the half-edge whose next or prev points to id
-        for (auto& other : halfEdges) {
-            if (other.next == id) other.next = -1;
-            if (other.prev == id) other.prev = -1;
+        int prevId = h->prev;
+        int nextId = h->next;
+        MGHalfEdge* prev = (prevId >= 0) ? halfEdge(prevId) : nullptr;
+        MGHalfEdge* next = (nextId >= 0) ? halfEdge(nextId) : nullptr;
+        // Stitch around: prev->next skips h, next->prev skips h
+        if (prev && prev->next == id) prev->next = nextId;
+        if (next && next->prev == id) next->prev = prevId;
+        // Fix face start_he if it pointed to this edge
+        for (auto& f : faces) {
+            if (f.start_he == id)
+                f.start_he = (nextId != id) ? nextId : -1;
         }
     };
     patch(heId);
@@ -299,8 +313,9 @@ BoundaryString MerrellGraph::boundaryOf(int faceId) const
     int n = (int)loop.size();
     for (int i = 0; i < n; ++i) {
         BoundaryElement edgeElem;
-        edgeElem.is_turn = false;
-        edgeElem.edge_id = loop[i]->id;
+        edgeElem.is_turn    = false;
+        edgeElem.edge_id    = loop[i]->id;
+        edgeElem.edge_label = loop[i]->label.r;
         bs.elements.push_back(edgeElem);
 
         float t0 = loop[i]->label.theta;
@@ -319,61 +334,108 @@ BoundaryString MerrellGraph::boundaryOf(int faceId) const
 
 BoundaryString MerrellGraph::outerBoundary() const
 {
-    // Collect all half-edges that have no twin (twin == -1) or whose twin
-    // has face == -1 (exterior). These form the outer boundary of the graph.
-    // Walk the cut-edge chain: at each vertex, follow outgoing half-edges
-    // to find the next cut edge on the outer boundary (CCW order).
+    // Outer boundary extraction for a planar half-edge graph.
+    //
+    // A half-edge belongs to the outer boundary iff its twin is exterior
+    // (twin->face == -1, meaning the twin was never assigned to a face).
+    //
+    // Algorithm:
+    //   1. Collect all boundary half-edge ids.
+    //   2. Build: endVertex -> list of boundary he ids STARTING at that vertex.
+    //      (Using a multimap since after merging, two boundary edges can start
+    //       at the same vertex — one from each incident face.)
+    //   3. Walk starting from boundaryIds[0]:
+    //      a. Record current edge.
+    //      b. Compute end vertex.
+    //      c. Among all boundary edges starting at end vertex, pick the one
+    //         that is NOT the reverse of current (i.e. not he->twin) AND
+    //         has not been visited.
+    //      d. Insert turn between current and next.
+    //      e. Repeat until back at start.
+    //
+    // The "pick not reverse" rule resolves the collision when two boundary
+    // edges start at the same merged vertex: one is the continuation of the
+    // current face, the other is from the adjacent face. The reverse would
+    // go BACK the way we came, so the correct one is the OTHER one.
 
-    // Step 1: collect all "boundary" half-edge ids (r == "open" or twin == -1)
-    std::vector<int> cutIds;
-    for (const auto& he : halfEdges) {
-        if (he.twin == -1 || he.label.r == "open")
-            cutIds.push_back(he.id);
-    }
+    auto isBoundaryHE = [&](int heId) -> bool {
+        const MGHalfEdge* he = halfEdge(heId);
+        if (!he) return false;
+        if (he->twin == -1) return true;
+        const MGHalfEdge* tw = halfEdge(he->twin);
+        return tw && tw->face == -1;
+    };
 
-    if (cutIds.empty()) return {};
+    // Step 1: collect boundary edge ids
+    std::vector<int> boundaryIds;
+    for (const auto& he : halfEdges)
+        if (isBoundaryHE(he.id)) boundaryIds.push_back(he.id);
 
-    // Step 2: build a map from start-vertex to cut half-edge
-    // so we can chain them in order
-    std::unordered_map<int,int> vertToHe; // vertex id -> he id leaving that vertex on boundary
-    for (int id : cutIds) {
+    if (boundaryIds.empty()) return {};
+
+    // End-vertex of a half-edge = start-vertex of its twin
+    auto endVertOf = [&](int heId) -> int {
+        const MGHalfEdge* he = halfEdge(heId);
+        if (!he) return -1;
+        if (he->twin == -1) return -1;
+        const MGHalfEdge* tw = halfEdge(he->twin);
+        return tw ? tw->vertex : -1;
+    };
+
+    // Step 2: build startVert -> [boundary he ids leaving that vert]
+    std::unordered_map<int, std::vector<int>> vertToBoundaryHEs;
+    for (int id : boundaryIds) {
         const MGHalfEdge* he = halfEdge(id);
-        if (he) vertToHe[he->vertex] = id;
+        if (he) vertToBoundaryHEs[he->vertex].push_back(id);
     }
 
-    // Step 3: walk the chain starting from cutIds[0]
+    // Step 3: walk
     BoundaryString bs;
-    int startId = cutIds[0];
+    int startId = boundaryIds[0];
     int curId   = startId;
     int safety  = 0;
+    int maxLen  = (int)boundaryIds.size() * 2 + 4;
+    std::set<int> visited;
 
     do {
-        const MGHalfEdge* he = halfEdge(curId);
-        if (!he || ++safety > (int)cutIds.size() + 2) break;
+        if (visited.count(curId)) break;
+        visited.insert(curId);
 
-        // Add edge element
+        const MGHalfEdge* he = halfEdge(curId);
+        if (!he || ++safety > maxLen) break;
+
+        // Record this edge
         BoundaryElement edgeElem;
-        edgeElem.is_turn = false;
-        edgeElem.edge_id = curId;
+        edgeElem.is_turn    = false;
+        edgeElem.edge_id    = curId;
+        edgeElem.edge_label = he->label.r;
         bs.elements.push_back(edgeElem);
 
-        // Find the end vertex of this he (= start of its twin)
-        const MGHalfEdge* tw = halfEdge(he->twin);
-        int endVert = tw ? tw->vertex : -1;
+        // Find end vertex
+        int endVert = endVertOf(curId);
+        if (endVert == -1) break;
 
-        // Look up the next cut edge starting at endVert
-        auto it = vertToHe.find(endVert);
-        if (it == vertToHe.end()) break;
+        // Find next boundary edge at endVert.
+        // Rules: must not be he->twin (that goes backward), must not be visited.
+        auto it = vertToBoundaryHEs.find(endVert);
+        if (it == vertToBoundaryHEs.end()) break;
 
-        int nextId = it->second;
-        if (nextId == curId) break; // degenerate
+        int nextId = -1;
+        for (int cand : it->second) {
+            if (cand == he->twin)    continue; // don't go backward
+            if (visited.count(cand) && cand != startId) continue; // don't revisit
+            nextId = cand;
+            break;
+        }
 
-        // Compute turn between this he and the next
+        if (nextId == -1) break;
+
+        // Insert turn
         const MGHalfEdge* nextHe = halfEdge(nextId);
         if (nextHe) {
             float t0 = he->label.theta;
             float t1 = nextHe->label.theta;
-            float cross = std::cos(t0) * std::sin(t1) - std::sin(t0) * std::cos(t1);
+            float cross = std::cos(t0)*std::sin(t1) - std::sin(t0)*std::cos(t1);
             if (std::abs(cross) > 1e-5f) {
                 BoundaryElement turnElem;
                 turnElem.is_turn   = true;
@@ -381,6 +443,8 @@ BoundaryString MerrellGraph::outerBoundary() const
                 bs.elements.push_back(turnElem);
             }
         }
+
+        if (nextId == startId) break; // loop closed
 
         curId = nextId;
     } while (curId != startId);

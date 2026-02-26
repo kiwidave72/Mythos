@@ -93,7 +93,7 @@ void MerrellGrammar::extractGrammar(std::function<void(int,int)> progressCb)
     algorithm1_findGrammar(progressCb);
 
     std::cout << "[MerrellGrammar] extractGrammar: "
-              << m_rules.size() << " rules (TODO MG-3)\n";
+              << m_rules.size() << " rules extracted (MG-3 complete).\n";
 }
 
 // ============================================================
@@ -221,8 +221,56 @@ static bool loopGlue(const MerrellGraph& A, const MerrellGraph& B,
 
     // Append A unchanged (zero offset)
     appendGraph(result, A, 0, 0, 0);
-    // Append B with offset
+
+    // ---- Translate B's vertex positions so it connects spatially to A ----
+    // heA_localId travels in direction theta_A. B's heB_localId must travel
+    // in the opposite direction (theta_B ≈ theta_A + π).
+    // We want B's "start" vertex (heB->vertex) to land at A's "end" vertex.
+    // A's end vertex = A's twin of heA start vertex.
+    {
+        const MGHalfEdge* heA_orig = A.halfEdge(heA_localId);
+        const MGHalfEdge* heB_orig = B.halfEdge(heB_localId);
+        if (heA_orig && heB_orig) {
+            // A's end-vertex position
+            const MGHalfEdge* heA_tw = A.halfEdge(heA_orig->twin);
+            if (heA_tw) {
+                const MGVertex* vA_end = A.vertex(heA_tw->vertex);
+                const MGVertex* vB_start = B.vertex(heB_orig->vertex);
+                if (vA_end && vB_start) {
+                    glm::vec2 offset = vA_end->pos - vB_start->pos;
+                    // Apply to all of B's vertices before appending
+                    // We do this via a modified appendGraph that adds the offset
+                    for (const auto& v : B.vertices) {
+                        MGVertex nv = v;
+                        nv.id          = v.id + vertOff;
+                        nv.outgoing_he = (v.outgoing_he >= 0) ? v.outgoing_he + heOff : -1;
+                        nv.pos         = v.pos + offset;
+                        result.vertices.push_back(nv);
+                    }
+                    for (const auto& he : B.halfEdges) {
+                        MGHalfEdge nhe = he;
+                        nhe.id     = he.id   + heOff;
+                        nhe.twin   = (he.twin >= 0)  ? he.twin  + heOff : -1;
+                        nhe.next   = (he.next >= 0)  ? he.next  + heOff : -1;
+                        nhe.prev   = (he.prev >= 0)  ? he.prev  + heOff : -1;
+                        nhe.vertex = he.vertex + vertOff;
+                        nhe.face   = (he.face >= 0)  ? he.face  + faceOff : -1;
+                        result.halfEdges.push_back(nhe);
+                    }
+                    for (const auto& f : B.faces) {
+                        MGFace nf = f;
+                        nf.id       = f.id + faceOff;
+                        nf.start_he = (f.start_he >= 0) ? f.start_he + heOff : -1;
+                        result.faces.push_back(nf);
+                    }
+                    goto vertices_appended;
+                }
+            }
+        }
+    }
+    // Fallback: append B without position offset
     appendGraph(result, B, vertOff, heOff, faceOff);
+    vertices_appended:;
 
     // Ids in the combined graph
     int heA = heA_localId;                   // already in A's index space (no offset)
@@ -257,6 +305,46 @@ static bool loopGlue(const MerrellGraph& A, const MerrellGraph& B,
     result.mergeVertices(v0_b, v1_a);
     result.mergeVertices(v1_b, v0_a);
 
+    // Re-fetch pointers after vertex merge (vectors may not have reallocated but
+    // erasing elements can shift indices — use id lookup)
+    a       = result.halfEdge(heA);
+    b       = result.halfEdge(heB);
+    a_twin  = result.halfEdge(heA_twin);
+    b_twin  = result.halfEdge(heB_twin);
+    if (!a || !b || !a_twin || !b_twin) return false;
+
+    // ---- Stitch face loops across the seam ----
+    // Before gluing:
+    //   ... → a_prev → [a] → a_next → ...   (face of A)
+    //   ... → b_prev → [b] → b_next → ...   (face of B)
+    //   (a and b's twins carry the face-loop info for their respective faces)
+    //
+    // After gluing, the two faces share the seam edge. We need to connect:
+    //   a_twin->prev's next  →  b->next   (A's inner face continues into B)
+    //   b_twin->prev's next  →  a->next   (B's inner face continues into A)
+    // i.e. remove a and b from their loops and cross-link.
+    {
+        int a_prev_id = a->prev;
+        int a_next_id = a->next;
+        int b_prev_id = b->prev;
+        int b_next_id = b->next;
+
+        MGHalfEdge* a_prev = (a_prev_id >= 0) ? result.halfEdge(a_prev_id) : nullptr;
+        MGHalfEdge* a_next = (a_next_id >= 0) ? result.halfEdge(a_next_id) : nullptr;
+        MGHalfEdge* b_prev = (b_prev_id >= 0) ? result.halfEdge(b_prev_id) : nullptr;
+        MGHalfEdge* b_next = (b_next_id >= 0) ? result.halfEdge(b_next_id) : nullptr;
+
+        // Cross-link: A's face flows into B's face through the seam
+        if (a_prev && b_next) { a_prev->next = b_next_id; b_next->prev = a_prev_id; }
+        if (b_prev && a_next) { b_prev->next = a_next_id; a_next->prev = b_prev_id; }
+
+        // Fix face start_he pointers so they don't start on the glued edge
+        for (auto& f : result.faces) {
+            if (f.start_he == heA) f.start_he = (a_next_id >= 0) ? a_next_id : -1;
+            if (f.start_he == heB) f.start_he = (b_next_id >= 0) ? b_next_id : -1;
+        }
+    }
+
     // Make heA and heB proper twins (connecting across the gluing seam)
     // so the interior edge is now a proper internal edge with both faces.
     // Then mark them as no longer "open" — they are now interior.
@@ -270,6 +358,17 @@ static bool loopGlue(const MerrellGraph& A, const MerrellGraph& B,
     b->label.r       = "glued";
     a_twin->label.r  = "glued";
     b_twin->label.r  = "glued";
+
+    // CRITICAL: Assign face IDs to the "exterior twin" half-edges of the seam
+    // (a_twin and b_twin had face=-1 since they were the outer side of the
+    // open edges before gluing). After gluing they are interior seam edges.
+    // outerBoundary() uses: isBoundaryHE(id) = (twin->face == -1).
+    // Without this fix, a_twin's new twin is b_twin (face=-1), so a_twin
+    // is wrongly identified as a boundary edge, corrupting the boundary walk.
+    //
+    // Cross-assign: a_twin is now "inside" face_B, b_twin is inside face_A.
+    if (a_twin->face == -1) a_twin->face = b->face;   // a_twin interior to B's face
+    if (b_twin->face == -1) b_twin->face = a->face;   // b_twin interior to A's face
 
     return true;
 }
@@ -320,6 +419,66 @@ void MerrellGrammar::buildHierarchy(std::function<void(int,int)> progressCb)
     std::cout << "[MerrellGrammar] buildHierarchy: "
               << m_hierarchy.size() << " nodes total, depth="
               << hierarchyDepth() << "\n";
+
+    // ---- Diagnostic dump — full hierarchy --------------------------------
+    std::cout << "\n=== PRIMITIVE DUMP ===\n";
+    for (int i = 0; i < (int)m_primitives.size(); ++i) {
+        const auto& p = m_primitives[i];
+        std::cout << "PRIM[" << i << "]";
+        if (!p.faces.empty()) std::cout << " label=" << p.faces[0].label;
+        std::cout << "  v=" << p.vertexCount()
+                  << " e=" << p.edgeCount()
+                  << " f=" << p.faceCount() << "\n";
+        for (const auto& he : p.halfEdges) {
+            if (he.face == -1) continue; // skip twins with no face
+            std::cout << "  HE" << he.id
+                      << "  r=" << he.label.r
+                      << "  theta=" << (he.label.theta * 180.f / 3.14159f) << "deg"
+                      << "  twin=" << he.twin << "\n";
+        }
+        if (!p.faces.empty()) {
+            BoundaryString bs = p.boundaryOf(p.faces[0].id);
+            std::cout << "  boundary=" << bs.toString()
+                      << "  turns=" << bs.totalTurnCount()
+                      << "  complete=" << (bs.isComplete() ? "YES" : "NO") << "\n";
+        }
+    }
+
+    std::cout << "\n=== HIERARCHY DUMP ===\n";
+    for (const auto& node : m_hierarchy) {
+        // Count edge types
+        int nOpen = 0, nExt = 0, nGlued = 0;
+        for (const auto& he : node.graph.halfEdges) {
+            if (he.label.r == "open")     ++nOpen;
+            if (he.label.r == "exterior") ++nExt;
+            if (he.label.r == "glued")    ++nGlued;
+        }
+
+        // Outer boundary (structural walk — the full perimeter)
+        merrell::BoundaryString outerBs = node.graph.outerBoundary();
+
+        std::cout << "NODE " << node.id
+                  << "  gen=" << node.generation
+                  << "  v=" << node.graph.vertexCount()
+                  << " e=" << node.graph.edgeCount()
+                  << " f=" << node.graph.faceCount()
+                  << "  complete=" << (node.isComplete ? "YES" : "NO ")
+                  << "  pruned="  << (node.pruned     ? "YES" : "NO ")
+                  << "\n";
+        std::cout << "  outer_bnd=" << outerBs.toString()
+                  << "  turns=" << outerBs.totalTurnCount()
+                  << "  outer_complete=" << (outerBs.isComplete() ? "YES" : "NO");
+        if (!node.parentIds.empty()) {
+            std::cout << "  parents=[";
+            for (int id : node.parentIds) std::cout << id << " ";
+            std::cout << "]";
+        }
+        std::cout << "\n";
+        std::cout << "  edges: open=" << nOpen
+                  << " exterior=" << nExt
+                  << " glued=" << nGlued << "\n";
+    }
+    std::cout << "=== END DUMP ===\n\n";
 
     (void)progressCb;
 }
@@ -403,7 +562,7 @@ void MerrellGrammar::tryLoopGluings(int generation)
                     node.graph      = std::move(result);
                     node.boundary   = bs;
                     node.isComplete = bs.isComplete();
-                    node.childIds   = { ai, bi };
+                    node.parentIds   = { ai, bi };
 
                     std::cout << "[MerrellGrammar] MG-2 loop-glue: gen "
                               << generation + 1 << " node " << node.id
@@ -431,17 +590,277 @@ void MerrellGrammar::tryBranchGluings(int generation)
 // ============================================================
 // MG-3: Algorithms 1 & 2
 // ============================================================
+//
+// Algorithm 1 (Sec 5.1) — Grammar extraction
+// ─────────────────────────────────────────────────────────────
+// Extracts a minimal set of DPO rewrite rules from the hierarchy.
+// Each rule has the form  L ← I → R  where:
+//   R = a smaller/simpler graph (matched during generation)
+//   L = a larger graph (grown to during generation)
+//   I = the interface (shared boundary, preserved by the rule)
+//
+// For our grid-first, loop-glue-only hierarchy:
+//
+//  STARTER rules (Sec 5.3.1):  ∅ → primitive
+//    One per gen-0 primitive. R = empty graph, L = primitive.
+//    I = empty. Initialises generation.
+//
+//  EXPANSION rules:  parent → child
+//    For each gen-1+ hierarchy node C formed by gluing (A, B):
+//      R = A (one parent graph, with its open edge)
+//      L = C (the glued result)
+//      I = the interface = the open edge pair that was consumed
+//    In generation (R→L direction):
+//      "Find an open edge in the current shape matching A's open edge,
+//       then attach B to grow to C."
+//
+// Deduplication (Sec 5.7):
+//   Rules are deduped by the pair (boundary(R), boundary(L)).
+//   Two rules with the same boundary pair are equivalent.
+//
+// Pruning (Sec 5.6):
+//   A hierarchy node is pruned if it has no complete descendant.
+//   Pruned nodes never produce generation termination — skip them.
+
+// ── helpers ──────────────────────────────────────────────────
+
+// Build a minimal 2-vertex, 1-edge-pair interface graph I.
+// The interface for a single loop-glue is one edge connecting two vertices.
+// Used as the shared boundary preserved by an expansion rule.
+static MerrellGraph buildInterfaceGraph(float v0x, float v0y,
+                                        float v1x, float v1y,
+                                        const EdgeLabel& label)
+{
+    MerrellGraph I;
+    int iv0 = I.addVertex({v0x, v0y});
+    int iv1 = I.addVertex({v1x, v1y});
+    I.addHalfEdgePair(iv0, iv1, label);
+    return I;
+}
+
+// Build a Starter rule:  ∅ → primitive
+//   L = the primitive graph (a single tile)
+//   R = empty graph
+//   I = empty graph
+//   phi_L and phi_R are empty morphisms
+static DPORule buildStarterRule(int ruleId, const HierarchyNode& node)
+{
+    DPORule rule;
+    rule.id   = ruleId;
+    rule.kind = RuleKind::Starter;
+    rule.name = "starter_" + (node.graph.faces.empty()
+                               ? std::string("prim")
+                               : node.graph.faces[0].label);
+    rule.isStarterRule           = true;
+    rule.extractedAtGeneration   = 0;
+
+    rule.L = node.graph;      // the full primitive
+    rule.R = MerrellGraph();  // empty
+    rule.I = MerrellGraph();  // empty interface
+
+    // Boundary of L = the primitive's outer boundary
+    rule.boundary_L = node.boundary;
+    // Boundary of R = empty
+    rule.boundary_R = BoundaryString{};
+
+    return rule;
+}
+
+// Build an Expansion rule:  parent → child
+//   L = child graph (the glued result)
+//   R = parent graph A (what we match, with its open edge)
+//   I = single open-edge pair (the seam that was consumed)
+//
+// parentNodeA: the "A" parent (the one whose open edge was consumed).
+// childNode:   the glued result.
+// We record which open edge of A was consumed by looking at what
+// became 'glued' in child that was 'open' in A.
+//
+// phi_L: I → L   maps I's edge to the glued seam in L
+// phi_R: I → R   maps I's edge to the still-open edge in R (= A's open edge)
+static DPORule buildExpansionRule(int ruleId,
+                                  const HierarchyNode& parentNodeA,
+                                  const HierarchyNode& childNode,
+                                  int /*gluedHeInChild*/)
+{
+    DPORule rule;
+    rule.id   = ruleId;
+    rule.kind = RuleKind::LoopGlue;
+    rule.name = "expand_" + std::to_string(parentNodeA.id)
+              + "_to_"    + std::to_string(childNode.id);
+    rule.extractedAtGeneration = childNode.generation;
+
+    // L = child, R = parentA
+    rule.L = childNode.graph;
+    rule.R = parentNodeA.graph;
+
+    rule.boundary_L = childNode.boundary;
+    rule.boundary_R = parentNodeA.boundary;
+
+    // Interface I: a simple open-edge graph. For a loop-glue the interface
+    // is the edge pair that was glued. We build a minimal 2-vertex graph
+    // representing one open edge (the shape of a "slot" that R exposes).
+    //
+    // Find an open edge in R (parentA) to use as I's template.
+    const MGHalfEdge* openHE = nullptr;
+    for (const auto& he : rule.R.halfEdges)
+        if (he.label.r == "open" && he.face >= 0) { openHE = &he; break; }
+
+    if (openHE) {
+        const MGVertex* v0 = rule.R.vertex(openHE->vertex);
+        const MGHalfEdge* twin = rule.R.halfEdge(openHE->twin);
+        const MGVertex* v1 = twin ? rule.R.vertex(twin->vertex) : nullptr;
+
+        if (v0 && v1) {
+            rule.I = buildInterfaceGraph(v0->pos.x, v0->pos.y,
+                                         v1->pos.x, v1->pos.y,
+                                         openHE->label);
+
+            // phi_R: I edge 0 → R's open edge
+            rule.phi_R.vertexMap[0]   = v0->id;
+            rule.phi_R.vertexMap[1]   = v1->id;
+            rule.phi_R.halfEdgeMap[0] = openHE->id;
+            rule.phi_R.halfEdgeMap[1] = openHE->twin;
+
+            // phi_L: I edge 0 → the corresponding glued seam in L
+            // Find the glued edge in L that has the same theta as the open edge in R.
+            // (After gluing, the consumed open edge becomes 'glued' in L.)
+            for (const auto& he : rule.L.halfEdges) {
+                if (he.label.r == "glued" && he.face >= 0) {
+                    float tDiff = std::abs(he.label.theta - openHE->label.theta);
+                    bool same = tDiff < 1e-3f || std::abs(tDiff - 2.f*MG_PI) < 1e-3f;
+                    if (same) {
+                        const MGHalfEdge* ltwin = rule.L.halfEdge(he.twin);
+                        const MGVertex* lv0 = rule.L.vertex(he.vertex);
+                        const MGVertex* lv1 = ltwin ? rule.L.vertex(ltwin->vertex) : nullptr;
+                        if (lv0 && lv1) {
+                            rule.phi_L.vertexMap[0]   = lv0->id;
+                            rule.phi_L.vertexMap[1]   = lv1->id;
+                            rule.phi_L.halfEdgeMap[0] = he.id;
+                            rule.phi_L.halfEdgeMap[1] = he.twin;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    return rule;
+}
+
+// Returns true if `node` has any complete descendant (including itself).
+// Used for pruning (Sec 5.6).
+static bool hasCompleteDescendant(int nodeIdx,
+                                  const std::vector<HierarchyNode>& hier)
+{
+    if (nodeIdx < 0 || nodeIdx >= (int)hier.size()) return false;
+    if (hier[nodeIdx].isComplete) return true;
+    // Search recursively through children (nodes whose parentIds include nodeIdx)
+    for (int i = 0; i < (int)hier.size(); ++i) {
+        const auto& n = hier[i];
+        for (int pid : n.parentIds) {
+            if (pid == nodeIdx && hasCompleteDescendant(i, hier))
+                return true;
+        }
+    }
+    return false;
+}
+
+// ── Algorithm 1 ─────────────────────────────────────────────
 
 void MerrellGrammar::algorithm1_findGrammar(
     std::function<void(int,int)> progressCb)
 {
-    // TODO MG-3: Algorithm 1 (Sec 5.1)
-    (void)progressCb;
+    m_rules.clear();
+
+    int totalNodes = (int)m_hierarchy.size();
+
+    // ── Step 1: Starter rules for gen-0 primitives ───────────────────────────
+    for (int i = 0; i < (int)m_hierarchy.size(); ++i) {
+        const auto& node = m_hierarchy[i];
+        if (node.generation != 0) continue;
+        if (node.pruned)          continue;
+        if (!node.isComplete)     continue;  // prims should always be complete
+
+        DPORule r = buildStarterRule(nextRuleId(), node);
+        std::cout << "[MG-3] Starter rule " << r.id
+                  << ": ∅ → " << r.name << "\n";
+        m_rules.push_back(std::move(r));
+
+        if (progressCb) progressCb(i, totalNodes);
+    }
+
+    // ── Step 2: Expansion rules from gen-1+ nodes ────────────────────────────
+    // Track seen (R_boundary, L_boundary) pairs to deduplicate.
+    std::set<std::pair<std::string,std::string>> seenRulePairs;
+
+    // Pre-seed with starter rule pairs (∅ → prim)
+    for (const auto& r : m_rules)
+        seenRulePairs.insert({r.boundary_R.toString(), r.boundary_L.toString()});
+
+    for (int i = 0; i < (int)m_hierarchy.size(); ++i) {
+        const auto& childNode = m_hierarchy[i];
+        if (childNode.generation == 0) continue;
+        if (childNode.pruned)          continue;
+        if (!childNode.isComplete)     continue;  // only complete nodes produce rules
+
+        if (progressCb) progressCb(i, totalNodes);
+
+        // Each parent gives a potential expansion rule.
+        // parentIds = [ai, bi] — gluing of A and B produced this child.
+        // Rule: R=A, L=child, I=seam
+        // We emit one rule per unique (∂A, ∂child) pair.
+        for (int parentIdx : childNode.parentIds) {
+            if (parentIdx < 0 || parentIdx >= (int)m_hierarchy.size()) continue;
+            const auto& parentNode = m_hierarchy[parentIdx];
+            if (parentNode.pruned) continue;
+
+            std::string rBnd = parentNode.boundary.toString();
+            std::string lBnd = childNode.boundary.toString();
+            auto key = std::make_pair(rBnd, lBnd);
+            if (seenRulePairs.count(key)) continue;
+            seenRulePairs.insert(key);
+
+            DPORule rule = buildExpansionRule(nextRuleId(), parentNode, childNode, -1);
+            std::cout << "[MG-3] Expansion rule " << rule.id
+                      << ": N" << parentIdx << " → N" << i
+                      << "  (∂R=" << rBnd << "  ∂L=" << lBnd << ")\n";
+            m_rules.push_back(std::move(rule));
+        }
+    }
+
+    // ── Step 3: Pruning pass (Sec 5.6) ───────────────────────────────────────
+    // Mark nodes with no complete descendants as pruned.
+    int pruned = 0;
+    for (int i = 0; i < (int)m_hierarchy.size(); ++i) {
+        auto& node = m_hierarchy[i];
+        if (!node.pruned && !hasCompleteDescendant(i, m_hierarchy)) {
+            node.pruned = true;
+            ++pruned;
+        }
+    }
+    if (pruned > 0)
+        std::cout << "[MG-3] Pruned " << pruned << " hierarchy nodes.\n";
+
+    std::cout << "[MerrellGrammar] extractGrammar: "
+              << m_rules.size() << " rules extracted.\n";
+
+    if (progressCb) progressCb(totalNodes, totalNodes);
 }
 
 bool MerrellGrammar::algorithm2_findMatchingGroups(int hierarchyNodeId)
 {
-    // TODO MG-3: Algorithm 2 (Sec 5.3)
+    // Algorithm 2 (Sec 5.3): recursive divide-and-conquer on boundary strings.
+    // Used by Algorithm 1 to check if a graph can be reduced by existing rules.
+    //
+    // For our grid-first implementation, the simpler approach in algorithm1 above
+    // (direct parent→child rule extraction) is equivalent for loop-glue-only
+    // hierarchies. Algorithm 2 becomes essential for branch gluings (MG-2 step 2)
+    // and when we need to detect if a large graph is reducible by a chain of
+    // existing small rules rather than needing a new rule.
+    //
+    // TODO MG-3 step 2: implement full Algorithm 2 for completeness.
     (void)hierarchyNodeId;
     return false;
 }

@@ -10,7 +10,7 @@ find_package(glad   CONFIG REQUIRED)
 find_package(glm    CONFIG REQUIRED)
 find_package(imgui    CONFIG REQUIRED)
 find_package(imguizmo CONFIG REQUIRED)
-find_package(imnodes  CONFIG REQUIRED)
+# imnodes vendored in third_party/imnodes/ — no find_package needed
 
 # ---- Shaders copied to build dir ----
 file(GLOB SHADER_FILES "${CMAKE_SOURCE_DIR}/shaders/*.vert"
@@ -48,6 +48,8 @@ set(SOURCES
     # grammar-ui: ImGui panels for grammar editing
     lib/grammar-ui/GrammarView.cpp
     lib/grammar-ui/GraphViewer.cpp
+    # imnodes: vendored in-tree, bypasses vcpkg
+    third_party/imnodes/imnodes.cpp
 )
 
 add_executable(Mythos ${SOURCES})
@@ -62,6 +64,7 @@ target_include_directories(Mythos PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/lib/grammar-core
     ${CMAKE_SOURCE_DIR}/lib/grammar-ui
+    ${CMAKE_SOURCE_DIR}/third_party/imnodes
 )
 
 # vcpkg puts imgui backends headers here
@@ -76,7 +79,6 @@ target_link_libraries(Mythos PRIVATE
     glm::glm
     imgui::imgui
     imguizmo::imguizmo
-    imnodes::imnodes
 )
 
 # Windows: link comdlg32 for native file dialogs (GetOpenFileName)

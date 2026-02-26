@@ -95,7 +95,7 @@ struct HierarchyNode {
     BoundaryString boundary;        // cached boundary string
     bool           isComplete = false;  // |turn sum| == 4
     bool           pruned     = false;  // Algorithm 1: skip in matching
-    std::vector<int> childIds;          // nodes glued to produce this
+    std::vector<int> parentIds;         // source nodes glued to produce this node
 };
 
 // ============================================================

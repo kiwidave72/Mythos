@@ -92,18 +92,21 @@ bool App::init(int width, int height, const std::string& title)
     m_grammar.init(m_scene, m_meshLib);
 
     // ---- Merrell DPO grammar (MG-1+) init ----------------------------------
-    // Build socket definitions from the same tile vocabulary used by GrammarView.
-    // This keeps MerrellGrammar in sync with the registered primitives without
-    // duplicating the tile definitions.
+    // MINIMAL TEST INPUT — 2 tile types for readable hierarchy output.
+    //   HStraight : E(+1,0) + W(-1,0) sockets  — horizontal corridor tile
+    //   CornerNE  : E(+1,0) + N(0,-1) sockets  — 90-degree corner tile
+    //
+    // With 2 primitives at gen-0, gen-1 should produce pairs glued along
+    // their matching open edges (E-W and E-E compatible pairs).
+    // Keep maxHierarchyGen=3 so output stays readable.
+    // TO RESTORE full vocabulary: swap in 6-tile socketDefs and remove limits.
     {
         std::vector<merrell::TileSocketDef> socketDefs = {
-            { "HStraight", {{-1,0},{1,0}}  },
-            { "VStraight", {{0,-1},{0,1}}  },
-            { "CornerTL",  {{-1,0},{0,-1}} },
-            { "CornerTR",  {{ 1,0},{0,-1}} },
-            { "CornerBL",  {{-1,0},{0,1}}  },
-            { "CornerBR",  {{ 1,0},{0,1}}  },
+            { "HStraight", {{ 1,0},{-1,0}} },   // E + W sockets
+            { "CornerNE",  {{ 1,0},{ 0,-1}} },  // E + N sockets
         };
+        m_merrell.settings().maxHierarchyGen = 3;
+        m_merrell.settings().maxRules        = 50;
         m_merrell.loadFromTiles(socketDefs, {});
     }
 
@@ -111,15 +114,13 @@ bool App::init(int width, int height, const std::string& title)
 
     // Register grammar-ui toolbar section.
     // Shown only when mode == GRAPH_GRAMMAR — draws Generate / Reset / Step buttons.
-    m_ui.registerToolbarSection({
-        EditorMode::GRAPH_GRAMMAR,
-        [this]() { m_grammar.drawToolbar(m_scene, m_meshLib); }
-    });
+    m_ui.registerToolbarSection(
+        ToolbarSection::grammarOnly([this]() { m_grammar.drawToolbar(m_scene, m_meshLib); })
+    );
 
     // Register graph viewer toolbar section — Extract Grammar + status.
-    m_ui.registerToolbarSection({
-        EditorMode::GRAPH_GRAMMAR,
-        [this]() {
+    m_ui.registerToolbarSection(
+        ToolbarSection::grammarOnly([this]() {
             ImGui::TextDisabled("|");
             ImGui::SameLine();
             if (ImGui::Button(" Extract Grammar ")) {
@@ -139,8 +140,8 @@ bool App::init(int width, int height, const std::string& title)
                 (int)m_merrell.hierarchy().size(),
                 m_merrell.ruleCount());
             ImGui::TextDisabled("%s", buf);
-        }
-    });
+        })
+    );
 
     m_camera.target = {0,0,0};
     m_camera.yaw    = -45.f;

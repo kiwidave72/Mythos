@@ -1,9 +1,9 @@
 #include "GraphViewer.h"
 #include <imgui.h>
-#include <imnodes.h>
 #include <cstdio>
 #include <cmath>
 #include <algorithm>
+#include <vector>
 
 // ============================================================
 // Colour palette
@@ -43,21 +43,11 @@ ImU32 GraphViewer::faceColour(const std::string& label)
 }
 
 // ============================================================
-// imnodes context lifecycle
+// imnodes context lifecycle (kept for API compat; imnodes no longer used
+// for graph rendering — we draw directly via ImDrawList instead)
 // ============================================================
-void GraphViewer::ensureContext()
-{
-    if (!m_ctx)
-        m_ctx = ImNodes::CreateContext();
-}
-
-void GraphViewer::destroyContext()
-{
-    if (m_ctx) {
-        ImNodes::DestroyContext(m_ctx);
-        m_ctx = nullptr;
-    }
-}
+void GraphViewer::ensureContext()  { /* no-op */ }
+void GraphViewer::destroyContext() { /* no-op */ }
 
 // ============================================================
 // Main panel entry point
@@ -68,7 +58,6 @@ void GraphViewer::drawPanel(EditorUIState& state)
     if (state.mode != EditorMode::GRAPH_GRAMMAR) return;
     if (state.panelsHidden) return;
 
-    ensureContext();
 
     // Position to the right of the scene panel, left of the right edge
     ImGuiIO& io = ImGui::GetIO();
@@ -302,16 +291,27 @@ void GraphViewer::drawPrimitivesTab()
         ImGui::Text("GRAPH CANVAS");
         ImGui::PopStyleColor();
 
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4{0.08f, 0.09f, 0.12f, 1.f});
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4{0.06f, 0.07f, 0.10f, 1.f});
         ImGui::BeginChild("##prim_canvas", {-1.f, -1.f}, true);
 
-        ImNodes::SetCurrentContext(m_ctx);
-        ImNodes::BeginNodeEditor();
+        // Reserve space for drawing and call drawGraph directly into draw list
+        ImVec2 avail = ImGui::GetContentRegionAvail();
+        ImGui::Dummy(avail);  // claim the space so clipping rect is set
 
-        drawGraph(prim, m_selectedPrimitive * 1000, 50.f, 50.f);
+        // Draw the graph (ImDrawList-based, no imnodes nodes)
+        drawGraph(prim, m_selectedPrimitive * 1000, 40.f, 40.f);
 
-        ImNodes::MiniMap(0.12f, ImNodesMiniMapLocation_BottomRight);
-        ImNodes::EndNodeEditor();
+        // Legend
+        ImDrawList* leg = ImGui::GetWindowDrawList();
+        ImVec2 lo = ImGui::GetWindowPos();
+        float lx = lo.x + 10.f, ly = lo.y + avail.y - 54.f;
+        leg->AddRectFilled({lx-4, ly-4}, {lx+180, ly+52}, IM_COL32(15,18,28,210), 4.f);
+        leg->AddCircleFilled({lx+8, ly+8},  5, IM_COL32(180,200,240,200));
+        leg->AddText({lx+18, ly+1}, IM_COL32(180,200,240,255), "Vertex");
+        leg->AddLine({lx+4, ly+22}, {lx+30, ly+22}, kColOpen, 2.2f);
+        leg->AddText({lx+36, ly+15}, kColOpen, "Open edge");
+        leg->AddLine({lx+4, ly+38}, {lx+30, ly+38}, kColExterior, 1.4f);
+        leg->AddText({lx+36, ly+31}, kColExterior, "Exterior edge");
 
         ImGui::EndChild();
         ImGui::PopStyleColor();
@@ -424,10 +424,10 @@ void GraphViewer::drawHierarchyTab()
         }
 
         // Parents
-        if (!node.childIds.empty()) {
-            ImGui::TextDisabled("children:");
+        if (!node.parentIds.empty()) {
+            ImGui::TextDisabled("parents:");
             ImGui::SameLine();
-            for (int cid : node.childIds) {
+            for (int cid : node.parentIds) {
                 ImGui::SameLine();
                 ImGui::TextDisabled("N%d", cid);
             }
@@ -438,16 +438,13 @@ void GraphViewer::drawHierarchyTab()
 
         // Canvas
         ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4{0.08f, 0.09f, 0.12f, 1.f});
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4{0.06f, 0.07f, 0.10f, 1.f});
         ImGui::BeginChild("##hier_canvas", {-1.f, -1.f}, true);
 
-        ImNodes::SetCurrentContext(m_ctx);
-        ImNodes::BeginNodeEditor();
+        ImVec2 avail = ImGui::GetContentRegionAvail();
+        ImGui::Dummy(avail);
 
-        drawGraph(node.graph, 2000 + m_selectedHierNode * 200, 50.f, 50.f);
-
-        ImNodes::MiniMap(0.12f, ImNodesMiniMapLocation_BottomRight);
-        ImNodes::EndNodeEditor();
+        drawGraph(node.graph, 2000 + m_selectedHierNode * 200, 40.f, 40.f);
 
         ImGui::EndChild();
         ImGui::PopStyleColor();
@@ -540,16 +537,61 @@ void GraphViewer::drawRulesTab()
 
         // Canvas — show L / I / R graphs side by side
         ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4{0.08f, 0.09f, 0.12f, 1.f});
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4{0.06f, 0.07f, 0.10f, 1.f});
         ImGui::BeginChild("##rule_canvas", {-1.f, -1.f}, true);
 
-        ImNodes::SetCurrentContext(m_ctx);
-        ImNodes::BeginNodeEditor();
+        ImVec2 avail = ImGui::GetContentRegionAvail();
+        ImGui::Dummy(avail);
 
-        drawDPORule(rule, 5000 + m_selectedRule * 500);
+        // L / I / R in three horizontal columns
+        // Each column is avail.x/3 wide; use that as the column step.
+        float colW = avail.x / 3.f;
+        float graphH = avail.y;
+        // Scale: fit a ~2-unit wide graph into colW with some margin
+        // kScale in drawGraph is 140px, so a 1-unit tile = 140px.
+        // For multi-tile graphs (L) we may need to zoom out — drawGraph uses
+        // fixed scale, so just pass appropriate offsets and let user see what fits.
 
-        ImNodes::MiniMap(0.12f, ImNodesMiniMapLocation_BottomRight);
-        ImNodes::EndNodeEditor();
+        // Draw column separator lines
+        ImDrawList* cdl = ImGui::GetWindowDrawList();
+        ImVec2 cpos = ImGui::GetWindowPos();
+        cdl->AddLine({cpos.x + colW,     cpos.y}, {cpos.x + colW,     cpos.y + graphH}, IM_COL32(60,70,100,180), 1.f);
+        cdl->AddLine({cpos.x + colW*2.f, cpos.y}, {cpos.x + colW*2.f, cpos.y + graphH}, IM_COL32(60,70,100,180), 1.f);
+
+        // Column header labels
+        auto colLabel = [&](const char* text, float cx, float col) {
+            cdl->AddText({cpos.x + col + 8.f, cpos.y + 6.f},
+                         IM_COL32(140, 180, 255, 230), text);
+        };
+        colLabel("L  (result)",    colW,   0.f);
+        colLabel("I  (interface)", colW*2, colW);
+        colLabel("R  (matched)",   colW*3, colW*2);
+
+        // Draw the three graphs at their column offsets
+        // We override offsetX so each graph starts at the right column.
+        // Because drawGraph uses canvasOrigin = GetCursorScreenPos() and our
+        // Dummy() already moved cursor past the available region, we need
+        // to temporarily set cursor back to child top so the worldToScreen
+        // lambda picks up the right origin. Easiest: pass column offset in
+        // offsetX as pixels from the child's top-left.
+        // offsetY = 30 to leave room for column header
+        drawGraph(rule.L, 5000 + m_selectedRule * 500,          30.f, 30.f);
+
+        // For I and R, shift by column offset pixels.
+        // drawGraph adds offsetX to canvasOrigin.x, so this works.
+        // But canvasOrigin comes from GetCursorScreenPos which is now at
+        // child bottom after Dummy. We need to reset it or use absolute coords.
+        // Workaround: use negative offsetX correction relative to cpos.
+        // The child's cursor after Dummy() has y = cpos.y + avail.y.
+        // worldToScreen: screen.x = GetCursorScreenPos().x + offsetX + wx*scale
+        // We want screen.x = cpos.x + colWidth + wx*scale + margin
+        // So offsetX for column 1 = colWidth + margin - (GetCursorScreenPos().x - cpos.x)
+        // Since cursor moved to end of Dummy, GetCursorScreenPos.x = cpos.x
+        // (cursor x resets to left margin after Dummy in a vertical layout)
+        // So: offsetX_for_col1 = colW + 30
+        //     offsetX_for_col2 = colW*2 + 30
+        drawGraph(rule.I, 5000 + m_selectedRule * 500 + 100,   colW + 30.f,   30.f);
+        drawGraph(rule.R, 5000 + m_selectedRule * 500 + 200,   colW*2 + 30.f, 30.f);
 
         ImGui::EndChild();
         ImGui::PopStyleColor();
@@ -561,145 +603,171 @@ void GraphViewer::drawRulesTab()
 }
 
 // ============================================================
-// drawGraph — render a MerrellGraph as imnodes
+// drawGraph — render a MerrellGraph directly via ImDrawList
 // ============================================================
+// Instead of imnodes nodes (which caused overlap and illegibility),
+// we draw directly onto the canvas using ImDrawList:
+//   • Vertices    = filled circles with ID label
+//   • Edges       = directed arrows coloured by r-label, with θ/label text
+//   • Face labels = centroid text
+// The canvas itself is still an imnodes editor (for pan/zoom), but we
+// draw into its background draw-list so nothing is draggable.
+// ─────────────────────────────────────────────────────────────────────────────
 int GraphViewer::drawGraph(const merrell::MerrellGraph& graph,
-                           int nodeIdBase,
+                           int /*nodeIdBase — unused, kept for API compat*/,
                            float offsetX, float offsetY)
 {
-    if (graph.isEmpty()) return nodeIdBase;
+    if (graph.isEmpty()) return 0;
 
-    // Layout: place vertex nodes at their stored positions (scaled to canvas coords)
-    // Face nodes in the center of their boundary vertices
-    // Edge node per half-edge pair connecting the two vertex nodes
+    // ── Layout constants ────────────────────────────────────────────────────
+    // Scale world-space coords (0–2 range typical) to canvas pixels.
+    // kScale chosen so a single 1×1 tile fills ~140 px.
+    static const float kScale    = 140.f;
+    static const float kVtxR     = 7.f;   // vertex circle radius
+    static const float kArrowLen = 10.f;  // arrowhead leg length
+    static const float kArrowAng = 0.45f; // arrowhead half-angle (radians)
 
-    static const float kScale = 120.f;  // world units → canvas pixels
-    int nextId = nodeIdBase;
+    // Edge label text offset (pixels, perpendicular to edge direction)
+    static const float kLabelOff = 14.f;
 
-    // ---- Vertex nodes ----
-    for (const auto& v : graph.vertices) {
-        int nodeId = nextId++;
-        ImNodes::SetNodeEditorSpacePos(nodeId,
-            ImVec2{offsetX + v.pos.x * kScale, offsetY + (1.f - v.pos.y) * kScale});
+    // Get draw list; draw into the background so items are non-interactive
+    // but still clipped to the canvas region.
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 canvasOrigin = ImGui::GetCursorScreenPos();
 
-        ImNodes::BeginNode(nodeId);
-        ImNodes::BeginNodeTitleBar();
-        ImGui::TextUnformatted("V");
-        ImGui::SameLine();
-        ImGui::Text("%d", v.id);
-        ImNodes::EndNodeTitleBar();
+    auto worldToScreen = [&](float wx, float wy) -> ImVec2 {
+        // Flip Y: world y=0 at bottom, screen y=0 at top.
+        return ImVec2{
+            canvasOrigin.x + offsetX + wx * kScale,
+            canvasOrigin.y + offsetY + (2.f - wy) * kScale
+        };
+    };
 
-        // Output pin
-        ImNodes::BeginOutputAttribute(nextId++);
-        ImGui::TextDisabled("(%.2f,%.2f)", v.pos.x, v.pos.y);
-        ImNodes::EndOutputAttribute();
-
-        ImNodes::EndNode();
-    }
-
-    // ---- Face nodes ----
+    // ── Draw faces (filled polygons as background) ───────────────────────────
     for (const auto& f : graph.faces) {
-        int nodeId = nextId++;
+        if (f.start_he == -1) continue;
 
-        // Position: compute centroid of face boundary vertices
+        // Collect face boundary vertex positions
+        std::vector<ImVec2> poly;
+        int cur = f.start_he, safety = 0;
+        do {
+            const auto* he = graph.halfEdge(cur);
+            if (!he || ++safety > 200) break;
+            const auto* v = graph.vertex(he->vertex);
+            if (v) poly.push_back(worldToScreen(v->pos.x, v->pos.y));
+            cur = he->next;
+        } while (cur != f.start_he && safety < 200);
+
+        if (poly.size() >= 3) {
+            ImU32 fillCol = faceColour(f.label);
+            // Make it semi-transparent so edges/labels show through
+            fillCol = (fillCol & 0x00FFFFFF) | 0x28000000;  // alpha ~16%
+            dl->AddConvexPolyFilled(poly.data(), (int)poly.size(), fillCol);
+        }
+
+        // Face centroid label
         float cx = 0.f, cy = 0.f;
-        int count = 0;
-        if (f.start_he != -1) {
-            int cur = f.start_he, safety = 0;
-            do {
-                const auto* he = graph.halfEdge(cur);
-                if (!he || ++safety > 100) break;
-                const auto* v = graph.vertex(he->vertex);
-                if (v) { cx += v->pos.x; cy += v->pos.y; ++count; }
-                cur = he->next;
-            } while (cur != f.start_he);
-        }
-        if (count > 0) { cx /= count; cy /= count; }
+        for (auto& p : poly) { cx += p.x; cy += p.y; }
+        if (!poly.empty()) { cx /= poly.size(); cy /= poly.size(); }
 
-        ImNodes::SetNodeEditorSpacePos(nodeId,
-            ImVec2{offsetX + cx * kScale + 60.f,
-                   offsetY + (1.f - cy) * kScale + 60.f});
-
-        ImU32 titleCol = faceColour(f.label);
-        ImNodes::PushColorStyle(ImNodesCol_TitleBar,         titleCol);
-        ImNodes::PushColorStyle(ImNodesCol_TitleBarHovered,  titleCol);
-        ImNodes::PushColorStyle(ImNodesCol_TitleBarSelected, titleCol);
-
-        ImNodes::BeginNode(nodeId);
-        ImNodes::BeginNodeTitleBar();
-        ImGui::Text("F%d: %s", f.id, f.label.c_str());
-        ImNodes::EndNodeTitleBar();
-        ImGui::TextDisabled("deg=%d", f.degree);
-
-        // Boundary string
-        merrell::BoundaryString bs = graph.boundaryOf(f.id);
-        if (!bs.isEmpty()) {
-            ImGui::TextDisabled("bnd: %s", bs.toString().c_str());
-            bool complete = bs.isComplete();
-            if (complete)
-                ImGui::TextColored({0.3f,0.9f,0.3f,1.f}, "● complete");
-            else
-                ImGui::TextColored({0.6f,0.6f,0.6f,1.f}, "○ open");
-        }
-
-        ImNodes::EndNode();
-        ImNodes::PopColorStyle();
-        ImNodes::PopColorStyle();
-        ImNodes::PopColorStyle();
+        char flabel[64];
+        snprintf(flabel, sizeof(flabel), "F%d\n%s", f.id, f.label.c_str());
+        ImVec4 fc = ImGui::ColorConvertU32ToFloat4(faceColour(f.label));
+        fc.w = 0.9f;
+        dl->AddText(ImVec2{cx - 14.f, cy - 8.f},
+                    ImGui::ColorConvertFloat4ToU32(fc), flabel);
     }
 
-    // ---- Link: half-edge pairs as labelled links ----
-    // We can't draw directional arrows with imnodes (it only draws bezier links
-    // between pins). Instead draw text annotation nodes for each edge pair.
-    // Simple approach: one node per edge pair, positioned at edge midpoint.
-    for (size_t i = 0; i + 1 < graph.halfEdges.size(); i += 2) {
-        const auto& he   = graph.halfEdges[i];
-        const auto& twin = graph.halfEdges[i + 1];
+    // ── Draw half-edges as directed arrows ───────────────────────────────────
+    // Draw only the "face side" half-edges (face >= 0) to avoid duplicate arrows.
+    // The "exterior" twin (face == -1) is skipped; instead mark it separately.
+    for (const auto& he : graph.halfEdges) {
+        if (he.face < 0) continue;  // skip exterior/twin side
 
-        // Find endpoint positions
-        const auto* v0 = graph.vertex(he.vertex);
-        const auto* v1 = graph.vertex(twin.vertex);
+        const auto* v0   = graph.vertex(he.vertex);
+        const auto* twin = graph.halfEdge(he.twin);
+        const auto* v1   = twin ? graph.vertex(twin->vertex) : nullptr;
         if (!v0 || !v1) continue;
 
-        float mx = (v0->pos.x + v1->pos.x) * 0.5f;
-        float my = (v0->pos.y + v1->pos.y) * 0.5f;
+        ImVec2 p0 = worldToScreen(v0->pos.x, v0->pos.y);
+        ImVec2 p1 = worldToScreen(v1->pos.x, v1->pos.y);
 
-        int nodeId = nextId++;
-        ImNodes::SetNodeEditorSpacePos(nodeId,
-            ImVec2{offsetX + mx * kScale,
-                   offsetY + (1.f - my) * kScale + 30.f});
+        // Direction vector
+        float dx = p1.x - p0.x;
+        float dy = p1.y - p0.y;
+        float len = std::sqrt(dx*dx + dy*dy);
+        if (len < 1.f) continue;
+        float nx = dx / len, ny = dy / len;
+        float px = -ny, py =  nx;  // perpendicular (left of direction)
 
-        ImU32 edgeCol = halfEdgeColour(he.label);
-        ImNodes::PushColorStyle(ImNodesCol_NodeBackground,         IM_COL32(20,22,30,220));
-        ImNodes::PushColorStyle(ImNodesCol_NodeBackgroundHovered,  IM_COL32(30,34,45,240));
-        ImNodes::PushColorStyle(ImNodesCol_NodeBackgroundSelected, IM_COL32(40,60,90,255));
+        // Shrink endpoints to not overlap vertex circles
+        ImVec2 from = ImVec2{p0.x + nx * (kVtxR + 2.f),
+                              p0.y + ny * (kVtxR + 2.f)};
+        ImVec2 to   = ImVec2{p1.x - nx * (kVtxR + 4.f),
+                              p1.y - ny * (kVtxR + 4.f)};
 
-        ImNodes::BeginNode(nodeId);
-        ImNodes::BeginNodeTitleBar();
+        // Offset outward slightly so twin arrows don't overlap
+        const float kTwinOff = 4.f;
+        from = ImVec2{from.x + px * kTwinOff, from.y + py * kTwinOff};
+        to   = ImVec2{to.x   + px * kTwinOff, to.y   + py * kTwinOff};
 
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{
-            ((edgeCol >>  0) & 0xFF) / 255.f,
-            ((edgeCol >>  8) & 0xFF) / 255.f,
-            ((edgeCol >> 16) & 0xFF) / 255.f, 1.f});
-        ImGui::Text("E%zu", i/2);
-        ImGui::PopStyleColor();
+        // Colour by r-label
+        ImU32 col = halfEdgeColour(he.label);
+        float thickness = (he.label.r == "open") ? 2.2f : 1.4f;
 
-        ImNodes::EndNodeTitleBar();
-        ImGui::TextDisabled("l:%s r:%s", he.label.l.c_str(), he.label.r.c_str());
-        ImGui::TextDisabled("θ=%.0f°", he.label.theta * 180.f / 3.14159f);
+        dl->AddLine(from, to, col, thickness);
 
-        if (he.twin == -1)
-            ImGui::TextColored({0.9f,0.3f,0.3f,1.f}, "cut");
-        else
-            ImGui::TextDisabled("twin=HE%d", he.twin);
+        // Arrowhead
+        float ax0 = to.x - nx * kArrowLen + py * kArrowLen * 0.5f;
+        float ay0 = to.y - ny * kArrowLen - px * kArrowLen * 0.5f;  // wrong sign fix:
+        // Actually compute cleanly:
+        float cos_a = std::cos(kArrowAng), sin_a = std::sin(kArrowAng);
+        // Rotate -nx,-ny by ±kArrowAng
+        ImVec2 ah1 = ImVec2{
+            to.x + (-nx * cos_a + ny * sin_a) * kArrowLen,
+            to.y + (-ny * cos_a - nx * sin_a) * kArrowLen
+        };
+        ImVec2 ah2 = ImVec2{
+            to.x + (-nx * cos_a - ny * sin_a) * kArrowLen,
+            to.y + (-ny * cos_a + nx * sin_a) * kArrowLen
+        };
+        (void)ax0; (void)ay0;
+        dl->AddLine(to, ah1, col, thickness);
+        dl->AddLine(to, ah2, col, thickness);
 
-        ImNodes::EndNode();
-        ImNodes::PopColorStyle();
-        ImNodes::PopColorStyle();
-        ImNodes::PopColorStyle();
+        // Edge label: HE id + r-value + θ, placed offset from midpoint
+        ImVec2 mid = ImVec2{(from.x + to.x) * 0.5f + px * kLabelOff,
+                             (from.y + to.y) * 0.5f + py * kLabelOff};
+        char elabel[64];
+        const char* rShort = he.label.r == "open"     ? "O"
+                           : he.label.r == "exterior"  ? "X"
+                           : he.label.r == "glued"     ? "G"
+                           : he.label.r.c_str();
+        snprintf(elabel, sizeof(elabel), "HE%d [%s] %.0f\xc2\xb0",
+                 he.id, rShort,
+                 he.label.theta * 180.f / 3.14159f);
+        // Small white outline for readability
+        dl->AddText(ImVec2{mid.x + 1.f, mid.y + 1.f},
+                    IM_COL32(0, 0, 0, 180), elabel);
+        dl->AddText(mid, col, elabel);
     }
 
-    return nextId;
+    // ── Draw vertices as filled circles ──────────────────────────────────────
+    for (const auto& v : graph.vertices) {
+        ImVec2 sp = worldToScreen(v.pos.x, v.pos.y);
+
+        dl->AddCircleFilled(sp, kVtxR,     IM_COL32(30,  35,  50,  255));
+        dl->AddCircle      (sp, kVtxR + 1, IM_COL32(180, 200, 240, 200), 16, 1.5f);
+
+        // Vertex ID label centred in circle
+        char vlabel[16];
+        snprintf(vlabel, sizeof(vlabel), "%d", v.id);
+        ImVec2 tsz = ImGui::CalcTextSize(vlabel);
+        dl->AddText(ImVec2{sp.x - tsz.x * 0.5f, sp.y - tsz.y * 0.5f},
+                    IM_COL32(220, 230, 255, 255), vlabel);
+    }
+
+    return 0;  // no imnodes node IDs used
 }
 
 // ============================================================
@@ -734,51 +802,6 @@ void GraphViewer::drawBoundaryString(const merrell::BoundaryString& bs,
     ImGui::NewLine();
 }
 
-// ============================================================
-// drawDPORule — L / I / R side by side
-// ============================================================
-void GraphViewer::drawDPORule(const merrell::DPORule& rule, int nodeIdBase)
-{
-    int nextId = nodeIdBase;
+// drawDPORule is no longer used — L/I/R rendering is done inline
+// in drawRulesTab() via three drawGraph() calls side by side.
 
-    // Column layout: L at x=0, I at x=400, R at x=800
-    nextId = drawGraph(rule.L, nextId,  30.f, 60.f);
-    nextId = drawGraph(rule.I, nextId, 430.f, 60.f);
-    nextId = drawGraph(rule.R, nextId, 830.f, 60.f);
-
-    // Label columns
-    // (imnodes doesn't support static text nodes — draw as minimal nodes)
-    auto drawLabel = [&](const char* text, float x, float y) {
-        int nid = nextId++;
-        ImNodes::SetNodeEditorSpacePos(nid, ImVec2{x, y});
-        ImNodes::PushColorStyle(ImNodesCol_NodeBackground,        IM_COL32(0,0,0,0));
-        ImNodes::PushColorStyle(ImNodesCol_NodeBackgroundHovered, IM_COL32(0,0,0,0));
-        ImNodes::PushColorStyle(ImNodesCol_NodeOutline,           IM_COL32(0,0,0,0));
-        ImNodes::BeginNode(nid);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4{0.6f,0.8f,1.f,1.f});
-        ImGui::Text("%s", text);
-        ImGui::PopStyleColor();
-        ImNodes::EndNode();
-        ImNodes::PopColorStyle();
-        ImNodes::PopColorStyle();
-        ImNodes::PopColorStyle();
-    };
-
-    drawLabel("L (left)", 30.f, 20.f);
-    drawLabel("I (interface)", 430.f, 20.f);
-    drawLabel("R (right)", 830.f, 20.f);
-
-    // Draw phi_L / phi_R morphism hints as text inside the canvas
-    // (full morphism links would require matching pin IDs across graphs —
-    //  deferred to MG-3 when morphisms are actually populated)
-    int mNode = nextId++;
-    ImNodes::SetNodeEditorSpacePos(mNode, ImVec2{380.f, 200.f});
-    ImNodes::PushColorStyle(ImNodesCol_NodeBackground, IM_COL32(20,24,35,220));
-    ImNodes::BeginNode(mNode);
-    ImGui::TextColored({0.7f,0.85f,1.f,1.f}, "φL: I→L");
-    ImGui::TextColored({0.7f,0.85f,1.f,1.f}, "φR: I→R");
-    ImGui::TextDisabled("(morphism links");
-    ImGui::TextDisabled(" shown in MG-3)");
-    ImNodes::EndNode();
-    ImNodes::PopColorStyle();
-}

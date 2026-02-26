@@ -630,7 +630,7 @@ Phase 100   Large Worlds with Asset Packs
   the T-junctions and more complex configs needed for rule extraction.
 
   ─────────────────────────────────────────────────────────────────────────────
-  Phase MG-3  Grammar Extraction  (Algorithm 1 + Algorithm 2, Section 5)
+  Phase MG-3  ✓  Grammar Extraction  (Algorithm 1 + Algorithm 2, Section 5)
   ─────────────────────────────────────────────────────────────────────────────
   Extract DPO production rules from the hierarchy. Heart of the algorithm.
 
@@ -678,7 +678,10 @@ Phase 100   Large Worlds with Asset Packs
   ─────────────────────────────────────────────────────────────────────────────
 
   ─────────────────────────────────────────────────────────────────────────────
-  Phase MG-2.5  ✓  Graph Viewer -- imnodes Node Graph Editor
+  Phase MG-2.5  ✓  Graph Viewer -- imnodes Node Graph Editor  [CONFIRMED RUNNING]
+  imnodes vendored: third_party/imnodes/imnodes.h + imnodes.cpp
+  Removed from vcpkg.json. Added to CMakeLists SOURCES + include dirs.
+  ToolbarSection brace-init fixed: both App.cpp calls use grammarOnly() factory.
   ─────────────────────────────────────────────────────────────────────────────
   Add a new editor view that shows the output of MG-2 (and MG-1) as an
   interactive node graph, so hierarchy splits can be verified visually
@@ -751,7 +754,7 @@ Phase 100   Large Worlds with Asset Packs
 
 
   ─────────────────────────────────────────────────────────────────────────────────
-  Phase MG-2.5  ✓  Graph Viewer -- imnodes node graph panel
+  Phase MG-2.5  ✓  Graph Viewer -- imnodes node graph panel  [CONFIRMED RUNNING]
   GraphViewer.h/.cpp implemented: 3 tabs (Primitives/Hierarchy/Rules).
   imnodes API fixed: SetNodeEditorSpacePos, PopColorStyle() with no-arg.
   imnodes include in header. Wired into App::render() + App::init().

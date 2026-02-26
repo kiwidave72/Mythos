@@ -64,9 +64,10 @@ enum class TurnType {
 // One element in a boundary string — either an edge or a turn.
 // Boundary strings alternate:  edge -> turn -> edge -> turn -> ...
 struct BoundaryElement {
-    bool      is_turn   = false;
-    int       edge_id   = -1;
-    TurnType  turn_type = TurnType::Positive;
+    bool        is_turn    = false;
+    int         edge_id    = -1;
+    TurnType    turn_type  = TurnType::Positive;
+    std::string edge_label;  // r-label: "open", "exterior", "glued" (only when is_turn==false)
 };
 
 // ============================================================
